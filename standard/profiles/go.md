@@ -17,6 +17,10 @@ Applies Stitchability Standard Draft 0.1.
 
 `repo.billbert.co/artifactory/<name>`
 
+## go.mod and versioning
+
+The first released version is `v0.1.0`. The module's `go.mod` declares `go 1.24`.
+
 ## Install
 
 ```
