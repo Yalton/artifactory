@@ -1,0 +1,34 @@
+# Regexes matched against project code outside installed modules (addons/).
+# Each one targets re-implementing a module's own job, never the glue a correct
+# solution needs (WASD actions, a movement script, a room scene, kit API calls).
+InputRemapKit:
+  - 'input_bindings'
+  - 'ActionEraseEvents\('
+  - 'class\s+\w*(Rebind|Remap)\w*'
+SettingsKit:
+  - 'ConfigFile\(\)'
+  - 'settings\.cfg'
+  - 'AudioServer\.SetBusVolumeDb'
+  - 'DisplayServer\.WindowSetVsyncMode'
+CursorKit:
+  - 'Input\.MouseMode\s*=[^=]'
+  - 'Input\.MouseModeEnum'
+DebugLogKit:
+  - 'debug_modules'
+  - 'class\s+\w*(DebugLog|Logger)\w*'
+DevConsoleKit:
+  - 'TextSubmitted'
+  - 'class\s+\w*Console\w*\s*:\s*(Control|Node|CanvasLayer|Panel)'
+CrashKit:
+  - 'FirstChanceException'
+  - 'UnhandledException'
+  - 'UnobservedTaskException'
+  - 'crash_reports'
+TransitionKit:
+  - 'ChangeSceneToFile\('
+  - 'ChangeSceneToPacked\('
+  - 'LoadThreadedRequest\('
+  - 'class\s+\w*(Transition|Fade)\w*\s*:\s*(Control|Node|CanvasLayer)'
+RunSaveKit:
+  - 'user://.*save'
+  - 'FileAccess\.Open(Encrypted\w*)?\('

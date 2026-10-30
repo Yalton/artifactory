@@ -1,0 +1,10 @@
+name: go-url-shortener
+ecosystem: go
+fixture: ../../../fixtures/go-blank
+prompt: prompt.md
+time_limit_s: 2700
+modules:
+  - config
+  - kvstore
+  - shortid
+  - httpserver
