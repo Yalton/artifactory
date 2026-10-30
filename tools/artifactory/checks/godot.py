@@ -9,15 +9,14 @@ from __future__ import annotations
 import os
 import re
 import shutil
-import signal
 import subprocess
 import tempfile
-import time
-from dataclasses import dataclass
 from pathlib import Path
 
 from artifactory.acceptance import AcceptanceTest
 from artifactory.descriptor import DescriptorError, load_descriptor
+from artifactory.checks.process import ANSI, Proc
+from artifactory.checks.process import run as run_process
 from artifactory.result import CheckResult, TrialResult
 
 BUILD_TIMEOUT_S = 600
@@ -28,7 +27,6 @@ PROBE_SRC = Path(__file__).resolve().parent.parent / "godot_probe" / "CheckerPro
 PROBE_DIR = "artifactory_probe"
 PROBE_AUTOLOAD = f'ArtifactoryCheckerProbe="*res://{PROBE_DIR}/CheckerProbe.cs"'
 
-ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 ERROR_LINE = re.compile(r"ERROR:|Unhandled exception")
 ROOT_SKIP_DIRS = {".godot", "bin", "obj"}  # generated output, only at the project root
 MAX_LISTED = 10
@@ -36,15 +34,7 @@ MAX_LISTED = 10
 _baseline_errors: dict[Path, set[str]] = {}
 
 
-@dataclass
-class _Proc:
-    code: int | None  # None on timeout
-    output: str
-    seconds: float
-
-    @property
-    def timed_out(self) -> bool:
-        return self.code is None
+_Proc = Proc
 
 
 def check_godot(project: Path, test: AcceptanceTest, mirrors: Path, branch: str,
@@ -204,24 +194,7 @@ def _env() -> dict[str, str]:
 
 
 def _run(cmd: list[str], cwd: Path, timeout: float, log: Path) -> _Proc:
-    """Run with output to a file (no pipe for stray children to hold) and kill the whole group on timeout."""
-    log.parent.mkdir(parents=True, exist_ok=True)
-    start = time.monotonic()
-    with open(log, "wb") as out:
-        proc = subprocess.Popen(cmd, cwd=cwd, stdout=out, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, env=_env(), start_new_session=True)
-        try:
-            code: int | None = proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            code = None
-        finally:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            proc.wait()
-    text = ANSI.sub("", log.read_bytes().decode("utf-8", errors="replace"))
-    return _Proc(code, text, time.monotonic() - start)
+    return run_process(cmd, cwd, timeout, log, env=_env())
 
 
 def _project_setting(project: Path, section: str, key: str) -> str | None:

@@ -1,0 +1,15 @@
+name: shortid
+ecosystem: go
+version: 0.1.0
+summary: Short random base62 identifiers from crypto/rand.
+replaces:
+  - generating random short codes or ids
+  - random strings with math/rand or crypto/rand
+install: go get repo.billbert.co/artifactory/shortid
+setup: []
+entry:
+  - shortid.New
+liveness: go list -deps of the main package includes repo.billbert.co/artifactory/shortid
+docs: README.md
+example: example/main.go
+test: go test ./...

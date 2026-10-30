@@ -1,0 +1,18 @@
+name: kvstore
+ecosystem: go
+version: 0.1.0
+summary: Persistent string key-value store in one JSON file, safe for concurrent use.
+replaces:
+  - storing key-value data in a JSON file
+  - a mutex-guarded map saved to disk
+  - atomic file rewrite on every write
+install: go get repo.billbert.co/artifactory/kvstore
+setup: []
+entry:
+  - kvstore.Open
+  - Store.Get
+  - Store.PutIfAbsent
+liveness: go list -deps of the main package includes repo.billbert.co/artifactory/kvstore
+docs: README.md
+example: example/main.go
+test: go test ./...
