@@ -20,3 +20,4 @@ packages = ["artifactory"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["godot: launches dotnet or godot (slow; runs by default)"]

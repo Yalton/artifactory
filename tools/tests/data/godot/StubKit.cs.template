@@ -1,0 +1,12 @@
+using Godot;
+
+namespace StubKits;
+
+// Stub kit used by the checker tests: prints its liveness marker on start.
+public partial class __NAME__ : Node
+{
+    public override void _Ready()
+    {
+        GD.Print("[__NAME__] live");
+    }
+}
