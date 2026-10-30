@@ -1,0 +1,22 @@
+[project]
+name = "artifactory"
+version = "0.1.0"
+description = "Tools for the stitchability standard"
+requires-python = ">=3.12"
+dependencies = ["PyYAML>=6"]
+
+[project.scripts]
+artifactory = "artifactory.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["artifactory"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
