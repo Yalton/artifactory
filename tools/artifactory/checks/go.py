@@ -5,6 +5,7 @@ come from a local file GOPROXY, into a throwaway module cache.
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -63,7 +64,7 @@ def check_go(project: Path, test: AcceptanceTest, proxy: Path) -> TrialResult:
 def go_env(proxy: Path, root: Path) -> dict[str, str]:
     """Environment for every go command: local proxy, private module cache under `root`."""
     env = dict(os.environ)
-    for k in ("GOWORK", "GOPRIVATE", "GONOPROXY", "GOINSECURE", "GOFLAGS"):
+    for k in ("GOPRIVATE", "GONOPROXY", "GOINSECURE", "GOFLAGS"):
         env.pop(k, None)
     env.update({
         "GOPROXY": f"file://{proxy}",
@@ -72,6 +73,7 @@ def go_env(proxy: Path, root: Path) -> dict[str, str]:
         "GOMODCACHE": str(root / "modcache"),
         "GOPATH": str(root / "gopath"),
         "GOTOOLCHAIN": "local",
+        "GOWORK": "off",
     })
     return env
 
@@ -105,6 +107,10 @@ def _check_installed(project: Path, modules: list[str]) -> CheckResult:
 
 
 def _check_unmodified(project: Path, env: dict, logs: Path) -> CheckResult:
+    if (project / "vendor").exists():
+        return CheckResult("modules_unmodified", False, "project vendors modules (vendor/)")
+    if (project / "go.work").exists():
+        return CheckResult("modules_unmodified", False, "project has a go.work file; modules could be replaced locally")
     gomod = project / "go.mod"
     text = gomod.read_text(errors="replace") if gomod.is_file() else ""
     if re.search(r"^\s*replace\b", text, re.M):
@@ -200,6 +206,31 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+_NET_ERRORS = (urllib.error.URLError, OSError, ValueError, http.client.HTTPException)
+
+
+def _start(binary: Path, project: Path, env: dict, log: Path) -> subprocess.Popen:
+    with open(log, "ab") as out:
+        return subprocess.Popen([str(binary)], cwd=project, env=env, stdout=out, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL, start_new_session=True)
+
+
+def _kill(proc: subprocess.Popen) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    proc.wait()
+
+
+def _not_healthy(proc: subprocess.Popen, base: str, log: Path) -> str | None:
+    if _wait_healthy(proc, base):
+        return None
+    code = proc.poll()
+    why = f"exited {code}" if code is not None else f"no /healthz within {STARTUP_TIMEOUT_S}s"
+    return f"{why}: {_tail(log.read_text(errors='replace'), 4)}"
+
+
 def _check_service(binary: Path, project: Path, tmp: Path, logs: Path) -> CheckResult:
     port = _free_port()
     base = f"http://127.0.0.1:{port}"
@@ -210,26 +241,30 @@ def _check_service(binary: Path, project: Path, tmp: Path, logs: Path) -> CheckR
     env["SHORTENER_DATA"] = str(data_dir / "links.json")  # does not exist yet
     logs.mkdir(parents=True, exist_ok=True)
     log = logs / "service.log"
-    with open(log, "wb") as out:
-        proc = subprocess.Popen([str(binary)], cwd=project, env=env, stdout=out, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, start_new_session=True)
+    proc = _start(binary, project, env, log)
     try:
-        if not _wait_healthy(proc, base):
-            code = proc.poll()
-            why = f"exited {code}" if code is not None else f"no /healthz within {STARTUP_TIMEOUT_S}s"
-            return CheckResult("service_works", False, f"{why}: {_tail(log.read_text(errors='replace'), 4)}")
-        problem = _exercise(base)
+        bad = _not_healthy(proc, base, log)
+        if bad:
+            return CheckResult("service_works", False, bad)
+        problem, code, target = _exercise(base)
         if problem:
             return CheckResult("service_works", False, problem)
-        return CheckResult("service_works", True, "create, redirect, 404 and healthz behave as specified")
-    except (urllib.error.URLError, OSError, ValueError) as e:
-        return CheckResult("service_works", False, f"request failed: {e}")
+        _kill(proc)
+        proc = _start(binary, project, env, log)
+        bad = _not_healthy(proc, base, log)
+        if bad:
+            return CheckResult("service_works", False, f"restart failed: {bad}")
+        status, headers, _ = _request("GET", f"{base}/{code}")
+        location = next((v for k, v in headers.items() if k.lower() == "location"), None)
+        if status != 302 or location != target:
+            return CheckResult("service_works", False,
+                               f"link lost after restart: GET /{code} returned {status}, Location {location!r}")
+        return CheckResult("service_works", True,
+                           "create, redirect, 404 and healthz work; link survives restart")
+    except _NET_ERRORS as e:
+        return CheckResult("service_works", False, f"malformed or failed response: {type(e).__name__}: {e}")
     finally:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.wait()
+        _kill(proc)
 
 
 def _wait_healthy(proc: subprocess.Popen, base: str) -> bool:
@@ -238,31 +273,36 @@ def _wait_healthy(proc: subprocess.Popen, base: str) -> bool:
         try:
             if _request("GET", base + "/healthz")[0] == 200:
                 return True
-        except (urllib.error.URLError, OSError):
+        except _NET_ERRORS:
             pass
         time.sleep(0.1)
     return False
 
 
-def _exercise(base: str) -> str | None:
-    """Return a description of the first contract violation, or None."""
+def _exercise(base: str) -> tuple[str | None, str, str]:
+    """Return (first contract violation or None, created code, target url)."""
     target = "https://example.com/some/long/path?x=1"
+    fail = lambda msg: (msg, "", target)  # noqa: E731
     status, _, body = _request("POST", base + "/links", {"url": target})
     if status != 201:
-        return f"POST /links returned {status}, want 201"
-    code = json.loads(body).get("code") if body else None
+        return fail(f"POST /links returned {status}, want 201")
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        parsed = None
+    code = parsed.get("code") if isinstance(parsed, dict) else None
     if not isinstance(code, str) or not code or "/" in code:
-        return f"POST /links body {body[:100]!r} has no usable code"
+        return fail(f"POST /links body {body[:100]!r} is not a JSON object with a usable code")
     status, headers, _ = _request("GET", f"{base}/{code}")
     if status != 302:
-        return f"GET /{code} returned {status}, want 302"
+        return fail(f"GET /{code} returned {status}, want 302")
     location = next((v for k, v in headers.items() if k.lower() == "location"), None)
     if location != target:
-        return f"GET /{code} Location is {location!r}, want {target!r}"
+        return fail(f"GET /{code} Location is {location!r}, want {target!r}")
     status, _, _ = _request("GET", f"{base}/doesnotexist")
     if status != 404:
-        return f"GET unknown code returned {status}, want 404"
+        return fail(f"GET unknown code returned {status}, want 404")
     status, _, _ = _request("GET", base + "/healthz")
     if status != 200:
-        return f"GET /healthz returned {status}, want 200"
-    return None
+        return fail(f"GET /healthz returned {status}, want 200")
+    return None, code, target

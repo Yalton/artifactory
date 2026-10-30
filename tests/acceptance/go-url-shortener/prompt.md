@@ -3,6 +3,7 @@ Build a URL shortener in Go in this module (`shortener`). Use every module liste
 Contracts:
 - The main package is `./cmd/shortener`.
 - Configuration comes from environment variables: `SHORTENER_ADDR` (listen address, default `:8080`) and `SHORTENER_DATA` (path of the data file).
+- Links are stored in the data file and survive a restart.
 - `POST /links` with JSON `{"url": "<url>"}` returns 201 and `{"code": "<code>"}`.
 - `GET /<code>` returns 302 with the `Location` header set to the stored URL.
 - An unknown code returns 404.

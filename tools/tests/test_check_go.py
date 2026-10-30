@@ -152,3 +152,45 @@ def test_modified_module_cache_fails_unmodified(tmp_path, proxy):
     result = check_go(project, TEST, evil)
     assert "modules_unmodified" in failing(result)
     assert "mismatch" in checks(result)["modules_unmodified"].detail
+
+
+def test_vendor_dir_fails_unmodified(tmp_path, proxy):
+    project = make_project(tmp_path, proxy)
+    (project / "vendor").mkdir()
+    result = check_go(project, TEST, proxy)
+    assert "modules_unmodified" in failing(result)
+    assert checks(result)["modules_unmodified"].detail == "project vendors modules (vendor/)"
+
+
+def test_go_work_fails_unmodified(tmp_path, proxy):
+    project = make_project(tmp_path, proxy)
+    (project / "go.work").write_text("go 1.24\n\nuse .\n")
+    result = check_go(project, TEST, proxy)
+    assert "modules_unmodified" in failing(result)
+    assert "go.work" in checks(result)["modules_unmodified"].detail
+
+
+def test_in_memory_store_fails_restart(tmp_path, proxy):
+    project = make_project(tmp_path, proxy)
+    main = project / "cmd" / "shortener" / "main.go"
+    src = main.read_text()
+    src = src.replace("added, err := store.PutIfAbsent(code, in.URL)",
+                      "_, exists := mem[code]\n\t\t\tadded := !exists\n\t\t\tmem[code] = in.URL")
+    src = src.replace("url, ok, err := store.Get(r.PathValue(\"code\"))",
+                      "url, ok := mem[r.PathValue(\"code\")]\n\t\tvar err error")
+    src = src.replace("type settings struct", "var mem = map[string]string{}\n\ntype settings struct")
+    assert "mem[" in src
+    main.write_text(src)
+    result = check_go(project, TEST, proxy)
+    assert failing(result) == {"service_works"}, result.to_json()
+    assert "link lost after restart" in checks(result)["service_works"].detail
+
+
+def test_malformed_json_body_is_failed_check_not_crash(tmp_path, proxy):
+    project = make_project(tmp_path, proxy)
+    main = project / "cmd" / "shortener" / "main.go"
+    main.write_text(main.read_text().replace(
+        'json.NewEncoder(w).Encode(map[string]string{"code": code})', 'w.Write([]byte(`"abc"`))'))
+    result = check_go(project, TEST, proxy)
+    assert failing(result) == {"service_works"}, result.to_json()
+    assert "usable code" in checks(result)["service_works"].detail
