@@ -185,6 +185,18 @@ def test_duplication_regex_hit_fails(tmp_path):
 
 
 @pytest.mark.godot
+def test_duplication_ignores_other_library_kits(tmp_path):
+    project, mirrors = make_project(tmp_path)
+    git("init", "-q", "--bare", str(mirrors / "ExtraKit.git"), cwd=tmp_path)
+    (project / "addons" / "ExtraKit").mkdir()
+    shutil.copy(DATA / "variants" / "SettingsStore.cs", project / "addons" / "ExtraKit" / "SettingsStore.cs")
+    git("add", ".", cwd=project)
+    git("commit", "-q", "-m", "extra kit", cwd=project)
+    result = check_godot(project, acceptance({"StubBKit": [r"ConfigFile\(\)"]}), mirrors, BRANCH)
+    assert failing(result) == set(), result.to_json()
+
+
+@pytest.mark.godot
 def test_godot_run_timeout_is_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(godot_checks, "RUN_TIMEOUT_S", 15)
     project, mirrors = make_project(tmp_path)

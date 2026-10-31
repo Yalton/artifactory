@@ -47,7 +47,7 @@ def check_godot(project: Path, test: AcceptanceTest, mirrors: Path, branch: str,
 
         installed, installed_check = _check_installed(copy, test.modules)
         unmodified = _check_unmodified(copy, test.modules, installed, mirrors, branch)
-        duplication = _check_duplication(copy, test)
+        duplication = _check_duplication(copy, test, mirrors)
 
         build, run = _build_and_run(copy, Path(tmp) / "logs")
         if run is None:
@@ -146,8 +146,10 @@ def _check_unmodified(project: Path, modules: list[str], installed: set[str], mi
     return CheckResult("modules_unmodified", True, f"all kits clean and published on {branch}")
 
 
-def _check_duplication(project: Path, test: AcceptanceTest) -> CheckResult:
-    excluded = {f"addons/{name}" for name in test.modules}
+def _check_duplication(project: Path, test: AcceptanceTest, mirrors: Path) -> CheckResult:
+    # Library code is not the trial's own code, even for kits the test did not ask for.
+    library = {m.name.removesuffix(".git") for m in mirrors.glob("*.git")}
+    excluded = {f"addons/{name}" for name in set(test.modules) | library}
     compiled = {name: [re.compile(p) for p in pats] for name, pats in test.duplication.items()}
     hits = []
     for file in sorted(_project_code_files(project, excluded)):
