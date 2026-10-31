@@ -1,6 +1,7 @@
 """Load and validate a module's module.yaml."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -84,6 +85,9 @@ def load_descriptor(module_dir: Path) -> Descriptor:
         folder = module_dir.resolve().name
         if values["name"] != folder:
             problems.append(f"name: {values['name']!r} must match folder name {folder!r}")
+    if eco == "godot-csharp" and values.get("liveness") is not None:
+        if not re.fullmatch(r"\[\w+\] live", values["liveness"]):
+            problems.append("liveness: godot-csharp value must be the exact marker line, like '[FooKit] live'")
 
     if problems:
         raise DescriptorError(problems)

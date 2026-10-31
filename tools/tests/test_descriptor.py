@@ -54,3 +54,7 @@ def test_replaces_needs_1_to_5_items_each_under_80_chars(tmp_path):
 
 def test_godot_name_matches_folder(tmp_path):
     assert any("BarKit" in p for p in problems(make(tmp_path, name="BarKit")))
+
+
+def test_godot_liveness_must_be_marker_line(tmp_path):
+    assert any("liveness" in p for p in problems(make(tmp_path, liveness="prints [FooKit] live at startup")))

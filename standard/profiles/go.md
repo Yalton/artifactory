@@ -31,6 +31,17 @@ go get repo.billbert.co/artifactory/<name>
 
 Run `go list -deps` on the main package. The module's path must appear in the output.
 
+## Before finishing
+
+Build and run the program, and confirm no errors are printed:
+
+```
+go build ./... && go vet ./...
+go run ./cmd/<main>
+```
+
+Then run `go list -deps` on the main package and confirm each module's path appears.
+
 ## Unmodified
 
 Go's module cache is read-only, so editing is largely prevented. Run `go mod verify`, and reject any `replace` directive that points at a local copy.

@@ -7,7 +7,15 @@ Install: `go get repo.billbert.co/artifactory/httpserver`
 ## Wiring
 
 ```go
-import "repo.billbert.co/artifactory/httpserver"
+import (
+	"context"
+
+	"repo.billbert.co/artifactory/httpserver"
+)
+
+// Run already stops on SIGINT/SIGTERM, so context.Background() is enough.
+// Do not add signal.NotifyContext.
+ctx := context.Background()
 
 mux := http.NewServeMux()
 mux.HandleFunc("GET /hello", hello)
