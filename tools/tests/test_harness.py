@@ -181,3 +181,13 @@ def test_round_bar_is_four_of_five():
     assert three.passes == 3 and not three.met_bar
     timed_out = TrialResult("t", "trial-5", [CheckResult("build", True, "")], "timeout")
     assert not RoundResult("t", 1, [_trial(True, k) for k in range(3)] + [timed_out]).met_bar
+
+
+def test_every_kit_url_form_resolves_to_mirrors(tmp_path):
+    cfg = tmp_path / "gitconfig"
+    cfg.write_text(harness._gitconfig(tmp_path / "mirrors"))
+    for form in harness.KIT_REMOTE_FORMS:
+        out = subprocess.run(["git", "ls-remote", "--get-url", f"{form}PoolKit.git"],
+                             env={"GIT_CONFIG_GLOBAL": str(cfg), "PATH": "/usr/bin:/bin"},
+                             capture_output=True, text=True, cwd=tmp_path).stdout.strip()
+        assert out == f"file://{tmp_path / 'mirrors'}/PoolKit.git"

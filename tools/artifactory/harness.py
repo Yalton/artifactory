@@ -52,6 +52,8 @@ GODOT_BINARY = Path(os.environ.get(
     "ARTIFACTORY_GODOT", "/opt/fastapps/godot/application-4.7/Godot_v4.7-stable_mono_linux.x86_64"))
 NUGET_PACKAGES = Path.home() / ".nuget" / "packages"
 KIT_REMOTE = "git@repo.billbert.co:yalt/"
+# Every spelling of the kit host a model might try, all served from the local mirrors.
+KIT_REMOTE_FORMS = [KIT_REMOTE, "ssh://git@repo.billbert.co/yalt/", "https://repo.billbert.co/yalt/"]
 STITCH_BRANCH = "stitchability"
 BASELINE_BRANCH = "main"
 TRIAL_NAME = "Artifactory Trial"
@@ -142,7 +144,7 @@ def _gitconfig(mirrors: Path | None) -> str:
              "[init]", "\tdefaultBranch = main",
              "[protocol \"file\"]", "\tallow = always"]
     if mirrors is not None:
-        lines += [f"[url \"file://{mirrors}/\"]", f"\tinsteadOf = {KIT_REMOTE}"]
+        lines += [f"[url \"file://{mirrors}/\"]"] + [f"\tinsteadOf = {url}" for url in KIT_REMOTE_FORMS]
     return "\n".join(lines) + "\n"
 
 
