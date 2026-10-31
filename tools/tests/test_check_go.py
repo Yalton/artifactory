@@ -37,7 +37,7 @@ def make_project(tmp_path, proxy, modules=MODULES) -> Path:
     project = tmp_path / "project"
     shutil.copytree(GOOD, project)
     for m in modules:
-        go(["get", f"repo.billbert.co/artifactory/{m}@v0.1.0"], project, proxy, tmp_path)
+        go(["get", f"repo.billbert.co/artifactory/{m}@latest"], project, proxy, tmp_path)
     return project
 
 

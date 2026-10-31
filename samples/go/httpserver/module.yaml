@@ -1,6 +1,6 @@
 name: httpserver
 ecosystem: go
-version: 0.1.0
+version: 0.1.1
 summary: Run an http.Handler with GET /healthz and graceful shutdown on signal or cancel.
 replaces:
   - http.ListenAndServe and http.Server setup
