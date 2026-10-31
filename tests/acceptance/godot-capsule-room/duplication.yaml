@@ -18,7 +18,7 @@ DebugLogKit:
   - 'class\s+\w*(DebugLog|Logger)\w*'
 DevConsoleKit:
   - 'TextSubmitted'
-  - 'class\s+\w*Console\w*\s*:\s*(Control|Node|CanvasLayer|Panel)\b'
+  - 'class\s+\w*Console\w*\s*:\s*(Control|Node\w*|CanvasLayer|Panel\w*|ColorRect)\b'
 CrashKit:
   - 'FirstChanceException'
   - 'UnhandledException'
@@ -27,6 +27,6 @@ TransitionKit:
   - 'ChangeSceneToFile\('
   - 'ChangeSceneToPacked\('
   - 'LoadThreadedRequest\('
-  - 'class\s+\w*(Transition|Fade)\w*\s*:\s*(Control|Node|CanvasLayer)\b'
+  - 'class\s+\w*(Transition|Fade)\w*\s*:\s*(Control|Node\w*|CanvasLayer|Panel\w*|ColorRect)\b'
 RunSaveKit:
   - 'FileAccess\.Open(Encrypted\w*)?\('

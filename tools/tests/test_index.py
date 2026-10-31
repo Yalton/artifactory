@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from artifactory.descriptor import Descriptor
-from artifactory.index import build_index
+from artifactory.index import build_index, index_preamble
 
 
 def desc(name, replaces=("thing",)):
@@ -28,3 +28,17 @@ def test_index_for_eight_modules_under_2000_words():
     ds = [desc(f"mod{i}", ["a phrase here", "another phrase here", "third phrase"]) for i in range(8)]
     pre = (Path(__file__).resolve().parents[2] / "standard" / "preamble.md").read_text()
     assert len(build_index(ds, pre).split()) < 2000
+
+
+def test_index_preamble_appends_ecosystem_notes(tmp_path):
+    (tmp_path / "consumer").mkdir()
+    (tmp_path / "preamble.md").write_text("RULES\n")
+    (tmp_path / "consumer" / "go.md").write_text("### Before finishing\nrun it\n")
+    out = index_preamble("go", tmp_path)
+    assert out.startswith("RULES") and "## Project notes (go)" in out and "run it" in out
+    assert index_preamble("godot-csharp", tmp_path) == "RULES"
+
+
+def test_real_godot_index_under_2000_words():
+    ds = [desc(f"mod{i}", ["a phrase here", "another phrase here", "third phrase"]) for i in range(8)]
+    assert len(build_index(ds, index_preamble("godot-csharp")).split()) < 2000

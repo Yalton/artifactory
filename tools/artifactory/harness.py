@@ -34,13 +34,12 @@ from .acceptance import AcceptanceTest, load_acceptance
 from .checks.go import go_env
 from .descriptor import DescriptorError, load_descriptor
 from .goproxy import build_goproxy
-from .index import build_index
+from .index import build_index, index_preamble
 from .result import CheckResult, TrialResult
 from .sandbox import sandbox_command
 
 REPO = Path(__file__).resolve().parents[2]
 RESULTS = REPO / "results"
-PREAMBLE = REPO / "standard" / "preamble.md"
 GO_SAMPLES = REPO / "samples" / "go"
 GODOT_TEST = REPO / "tests" / "acceptance" / "godot-capsule-room"
 BASELINE_README = Path("/data/fast/Projects/Tech/Games/Godot/Modules/README.md")
@@ -382,7 +381,7 @@ def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = F
         missing = [m for m in test.modules if m not in sample_names]
         if missing:
             raise RuntimeError(f"no Go sample module for: {', '.join(missing)}")
-        index_md = build_index(_go_descriptors(sorted(sample_names)), PREAMBLE.read_text())
+        index_md = build_index(_go_descriptors(sorted(sample_names)), index_preamble("go"))
         proxy = root / "goproxy"
         if proxy.exists():
             shutil.rmtree(proxy)
@@ -395,7 +394,7 @@ def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = F
         if baseline:
             index_md = BASELINE_README.read_text()
         else:
-            index_md = build_index(_godot_descriptors(mirrors, test.modules, branch), PREAMBLE.read_text())
+            index_md = build_index(_godot_descriptors(mirrors, test.modules, branch), index_preamble(test.ecosystem))
 
     out = root / test.name / ("baseline" if baseline else f"round-{round_no}")
     out.mkdir(parents=True, exist_ok=True)

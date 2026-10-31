@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from .descriptor import DescriptorError, load_descriptor
-from .index import build_index
+from .index import build_index, index_preamble
 
 PREAMBLE = Path(__file__).resolve().parents[2] / "standard" / "preamble.md"
 
@@ -32,7 +32,12 @@ def cmd_index(args) -> int:
     descriptors, failed = _load_all(args.module_dir)
     if failed:
         return 1
-    Path(args.output).write_text(build_index(descriptors, PREAMBLE.read_text()))
+    ecosystems = {d.ecosystem for d in descriptors}
+    if len(ecosystems) > 1:
+        print(f"modules mix ecosystems: {', '.join(sorted(ecosystems))}", file=sys.stderr)
+        return 1
+    preamble = index_preamble(ecosystems.pop()) if ecosystems else PREAMBLE.read_text()
+    Path(args.output).write_text(build_index(descriptors, preamble))
     return 0
 
 

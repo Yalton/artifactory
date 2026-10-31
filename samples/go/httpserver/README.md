@@ -7,23 +7,31 @@ Install: `go get repo.billbert.co/artifactory/httpserver`
 ## Wiring
 
 ```go
+package main
+
 import (
 	"context"
+	"log"
+	"net/http"
 
 	"repo.billbert.co/artifactory/httpserver"
 )
 
-// Run already stops on SIGINT/SIGTERM, so context.Background() is enough.
-// Do not add signal.NotifyContext.
-ctx := context.Background()
+func main() {
+	// Run already stops on SIGINT/SIGTERM, so context.Background() is enough.
+	// Do not add signal.NotifyContext.
+	ctx := context.Background()
 
-mux := http.NewServeMux()
-mux.HandleFunc("GET /hello", hello)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /hello", hello)
 
-// Blocks until shutdown; returns nil after a clean stop.
-if err := httpserver.Run(ctx, addr, mux); err != nil {
-	log.Fatal(err)
+	// Blocks until shutdown; returns nil after a clean stop.
+	if err := httpserver.Run(ctx, ":8080", mux); err != nil {
+		log.Fatal(err)
+	}
 }
+
+func hello(w http.ResponseWriter, r *http.Request) { w.Write([]byte("hello\n")) }
 ```
 
 ## Notes
