@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -414,8 +415,18 @@ def refresh_mirrors(root: Path | None = None) -> list[Path]:
     for name in load_acceptance(GODOT_TEST).modules:
         dest = mirrors / f"{name}.git"
         if dest.is_dir():
-            subprocess.run(["git", "remote", "update", "--prune"], cwd=dest, check=True)
+            _git_retrying(["git", "remote", "update", "--prune"], cwd=dest)
         else:
-            subprocess.run(["git", "clone", "--mirror", f"{KIT_REMOTE}{name}.git", str(dest)], check=True)
+            _git_retrying(["git", "clone", "--mirror", f"{KIT_REMOTE}{name}.git", str(dest)])
         done.append(dest)
     return done
+
+
+def _git_retrying(argv: list[str], cwd: Path | None = None, attempts: int = 4) -> None:
+    # The Forgejo host resets ssh connections that arrive in quick succession.
+    for attempt in range(1, attempts + 1):
+        if subprocess.run(argv, cwd=cwd).returncode == 0:
+            return
+        if attempt < attempts:
+            time.sleep(5 * attempt)
+    raise subprocess.CalledProcessError(1, argv)
