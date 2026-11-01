@@ -1,4 +1,4 @@
-# Stitchability Standard, Draft 0.1
+# Stitchability Standard, Draft 0.2
 
 A module is stitchable when a weak model can find it, install it, wire it in and prove it is in use. These eight rules apply to every module, whatever its ecosystem. Each profile maps them to concrete files, commands and checks.
 
