@@ -64,10 +64,10 @@ public partial class MoveCheck : Node
 Add the autoload `MoveCheck="*res://MoveCheck.cs"` under `[autoload]`, run `dotnet build`, then:
 
 ```
-godot --headless --path . -- --move-check
+timeout 30 godot --headless --path . -- --move-check
 ```
 
-It passes only if it prints `MOVECHECK ok=true` and no `ERROR:` line. It fails if the node in group `player` is not exactly one Node3D, or W and D do not move it about 0.5 to 20 units (W along -Z, D along +X). Fix the cause and re-run until it passes.
+It passes only if it prints `MOVECHECK ok=true` and no `ERROR:` line. No `MOVECHECK` line within 30 s is a failure: check the autoload line and `dotnet build`. It fails if the node in group `player` is not exactly one Node3D, or W and D do not move it about 0.5 to 20 units (W along -Z, D along +X). Fix the cause and re-run until it passes.
 
 ### Player pitfalls
 
