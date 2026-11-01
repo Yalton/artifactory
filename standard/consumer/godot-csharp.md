@@ -9,6 +9,10 @@ godot --headless --path . --quit-after 300
 
 Each installed kit's marker must appear and no `ERROR:` line may be printed.
 
+Also print a line from each of your own scripts' `_Ready` (for example `GD.Print("[Player] ready")`) and confirm it appears. Kit markers do not prove your scripts are attached.
+
+Never delete `.godot/`. If autoloads report "is not compiling", run `dotnet build`, then `godot --headless --import`.
+
 ### Host project files
 
 Copy these exactly. They were written by Godot 4.7 and load with no errors. Hand-invented variants of these formats fail.
@@ -47,5 +51,18 @@ Instancing a scene inside another `.tscn` takes an `ext_resource` of type `Packe
 
 [node name="Player" parent="." instance=ExtResource("1_player")]
 ```
+
+To attach a script, put `script = ...` on its own line under the `[node ...]` header. `script=` or any property inside the header is silently ignored:
+
+```ini
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://Player.cs" id="1_player"]
+
+[node name="Player" type="CharacterBody3D"]
+script = ExtResource("1_player")
+```
+
+Keep `.tscn` files to a root node and a script. Create meshes, lights and colliders in C# `_Ready()`, and join groups with `AddToGroup()` in code, not `groups=[...]`.
 
 Never write or edit `.uid` files or `uid=` attributes. Omit them. Godot generates them on import. `.uid` files under `addons/` belong to the kit.

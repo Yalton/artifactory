@@ -92,7 +92,7 @@ def test_missing_module_fails_installed(tmp_path, proxy):
     main = project / "cmd" / "shortener" / "main.go"
     main.write_text(main.read_text().replace(
         '\t"repo.billbert.co/artifactory/httpserver"\n', '').replace(
-        "httpserver.Run(context.Background(), cfg.Addr, mux)",
+        "httpserver.Run(cfg.Addr, mux)",
         "http.ListenAndServe(cfg.Addr, mux)").replace('\t"context"\n', ""))
     result = check_go(project, TEST, proxy)
     c = checks(result)

@@ -16,6 +16,13 @@ type Option func(*options)
 
 type options struct {
 	health func(context.Context) error
+	ctx    context.Context
+}
+
+// WithContext stops the server when ctx is cancelled. It is for tests and
+// embedding; a normal main does not need it.
+func WithContext(ctx context.Context) Option {
+	return func(o *options) { o.ctx = ctx }
 }
 
 // WithHealthCheck makes GET /healthz return 503 when fn returns an error.
@@ -23,10 +30,11 @@ func WithHealthCheck(fn func(context.Context) error) Option {
 	return func(o *options) { o.health = fn }
 }
 
-// Run serves h on addr, adding GET /healthz (200 by default). It returns nil after
-// a graceful shutdown, triggered by ctx being cancelled or SIGINT/SIGTERM.
-func Run(ctx context.Context, addr string, h http.Handler, opts ...Option) error {
-	var o options
+// Run serves h on addr, adding GET /healthz (200 by default). It blocks until
+// SIGINT or SIGTERM and handles them itself; do not install signal handlers.
+// It returns nil after a graceful shutdown.
+func Run(addr string, h http.Handler, opts ...Option) error {
+	o := options{ctx: context.Background()}
 	for _, opt := range opts {
 		opt(&o)
 	}
@@ -34,7 +42,7 @@ func Run(ctx context.Context, addr string, h http.Handler, opts ...Option) error
 	if err != nil {
 		return err
 	}
-	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(o.ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	mux := http.NewServeMux()

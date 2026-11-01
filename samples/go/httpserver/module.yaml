@@ -1,6 +1,6 @@
 name: httpserver
 ecosystem: go
-version: 0.1.1
+version: 0.2.0
 summary: Run an http.Handler with GET /healthz and graceful shutdown on signal or cancel.
 replaces:
   - http.ListenAndServe and http.Server setup
@@ -11,6 +11,7 @@ setup: []
 entry:
   - httpserver.Run
   - httpserver.WithHealthCheck
+  - httpserver.WithContext
 liveness: go list -deps of the main package includes repo.billbert.co/artifactory/httpserver
 docs: README.md
 example: example/main.go

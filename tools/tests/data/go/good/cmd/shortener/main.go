@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -67,7 +66,7 @@ func main() {
 		}
 	})
 
-	if err := httpserver.Run(context.Background(), cfg.Addr, mux); err != nil {
+	if err := httpserver.Run(cfg.Addr, mux); err != nil {
 		log.Fatal(err)
 	}
 }

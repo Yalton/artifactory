@@ -1,3 +1,11 @@
+### Reading a module
+
+After installing, read each module's README before coding. Its Wiring section is the snippet to follow:
+
+```
+cat $(go list -m -f '{{.Dir}}' <module path>)/README.md
+```
+
 ### Before finishing
 
 Build, vet and test, and confirm none of them prints an error:

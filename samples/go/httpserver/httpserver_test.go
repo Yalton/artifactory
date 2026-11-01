@@ -25,7 +25,7 @@ func start(t *testing.T, h http.Handler, opts ...httpserver.Option) (string, con
 	addr := freeAddr(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- httpserver.Run(ctx, addr, h, opts...) }()
+	go func() { done <- httpserver.Run(addr, h, append(opts, httpserver.WithContext(ctx))...) }()
 	for i := 0; i < 100; i++ {
 		if c, err := net.Dial("tcp", addr); err == nil {
 			c.Close()
@@ -78,7 +78,7 @@ func TestHealthCheckFailure(t *testing.T) {
 func TestListenError(t *testing.T) {
 	l, _ := net.Listen("tcp", "127.0.0.1:0")
 	defer l.Close()
-	err := httpserver.Run(context.Background(), l.Addr().String(), http.NotFoundHandler())
+	err := httpserver.Run(l.Addr().String(), http.NotFoundHandler())
 	if err == nil {
 		t.Fatal(fmt.Sprint("want listen error"))
 	}

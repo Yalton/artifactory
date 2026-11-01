@@ -2,7 +2,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -15,7 +14,7 @@ func main() {
 	mux.HandleFunc("GET /hello", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "hello")
 	})
-	if err := httpserver.Run(context.Background(), "127.0.0.1:8080", mux); err != nil {
+	if err := httpserver.Run("127.0.0.1:8080", mux); err != nil {
 		log.Fatal(err)
 	}
 }
