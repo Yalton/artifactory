@@ -126,7 +126,7 @@ def test_no_camera_fails_player_visible(tmp_path):
     scene.write_text(scene.read_text().split("\n[node name=\"Camera3D\"")[0])
     result = check_godot(project, acceptance(), mirrors, BRANCH)
     assert failing(result) == {"player_visible"}, result.to_json()
-    assert "camera=none" in by_name(result)["player_visible"].detail
+    assert "camera=none start=no_camera" in by_name(result)["player_visible"].detail
 
 
 @pytest.mark.godot
@@ -139,21 +139,72 @@ def test_camera_facing_away_fails_player_visible(tmp_path):
         "Transform3D(-1, 0, 0, 0, 1, 0, 0, 0, -1, 0, 1, 10)"))
     result = check_godot(project, acceptance(), mirrors, BRANCH)
     assert failing(result) == {"player_visible"}, result.to_json()
-    assert "start=out" in by_name(result)["player_visible"].detail
+    assert "start=out_of_frame" in by_name(result)["player_visible"].detail
 
 
 @pytest.mark.godot
 def test_wall_between_camera_and_player_fails_player_visible(tmp_path):
     project, mirrors = make_project(tmp_path)
     scene = project / "Main.tscn"
-    text = scene.read_text().replace("load_steps=2", "load_steps=3")
+    text = scene.read_text().replace("load_steps=3", "load_steps=4")
     text = text.replace('[node name="Main"', '[sub_resource type="BoxShape3D" id="wall"]\nsize = Vector3(40, 40, 1)\n\n[node name="Main"')
     text += '\n[node name="Wall" type="StaticBody3D" parent="."]\ntransform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 7)\n\n'
     text += '[node name="Shape" type="CollisionShape3D" parent="Wall"]\nshape = SubResource("wall")\n'
     scene.write_text(text)
     result = check_godot(project, acceptance(), mirrors, BRANCH)
     assert failing(result) == {"player_visible"}, result.to_json()
-    assert "camera=Camera3D start=out" in by_name(result)["player_visible"].detail
+    assert "camera=Camera3D start=blocked" in by_name(result)["player_visible"].detail
+
+
+@pytest.mark.godot
+def test_player_without_drawn_mesh_fails_player_visible(tmp_path):
+    project, mirrors = make_project(tmp_path)
+    scene = project / "Main.tscn"
+    scene.write_text(scene.read_text().replace('mesh = SubResource("capsule")\n', ""))
+    result = check_godot(project, acceptance(), mirrors, BRANCH)
+    assert failing(result) == {"player_visible"}, result.to_json()
+    assert "start=no_drawn_mesh" in by_name(result)["player_visible"].detail
+
+
+@pytest.mark.godot
+def test_first_person_camera_passes_player_visible(tmp_path):
+    project, mirrors = make_project(tmp_path)
+    scene = project / "Main.tscn"
+    # Camera at the player's head, child of the player: the player's origin is behind it.
+    scene.write_text(scene.read_text().replace(
+        '[node name="Camera3D" type="Camera3D" parent="."]\ntransform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 10)',
+        '[node name="Camera3D" type="Camera3D" parent="Player"]\ntransform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.8, 0)'))
+    result = check_godot(project, acceptance(), mirrors, BRANCH)
+    assert failing(result) == set(), result.to_json()
+
+
+@pytest.mark.godot
+def test_follow_camera_behind_wall_fails_player_visible(tmp_path):
+    project, mirrors = make_project(tmp_path)
+    scene = project / "Main.tscn"
+    # A third-person camera parented to the player, with a wall between them.
+    text = scene.read_text().replace("load_steps=3", "load_steps=4").replace(
+        '[node name="Camera3D" type="Camera3D" parent="."]\ntransform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 10)',
+        '[node name="Camera3D" type="Camera3D" parent="Player"]\ntransform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 10)')
+    text = text.replace('[node name="Main"', '[sub_resource type="BoxShape3D" id="wall"]\nsize = Vector3(40, 40, 1)\n\n[node name="Main"')
+    text += '\n[node name="Wall" type="StaticBody3D" parent="."]\ntransform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 7)\n\n'
+    text += '[node name="Shape" type="CollisionShape3D" parent="Wall"]\nshape = SubResource("wall")\n'
+    scene.write_text(text)
+    result = check_godot(project, acceptance(), mirrors, BRANCH)
+    assert failing(result) == {"player_visible"}, result.to_json()
+    assert "start=blocked" in by_name(result)["player_visible"].detail
+
+
+@pytest.mark.godot
+def test_wide_camera_is_framed_at_16_by_9(tmp_path):
+    project, mirrors = make_project(tmp_path)
+    scene = project / "Main.tscn"
+    # The player starts 8 left of centre at depth 8: outside a square frame, inside 16:9.
+    scene.write_text(scene.read_text().replace(
+        "Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 10)",
+        "Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8, 1, 8)"))
+    result = check_godot(project, acceptance(), mirrors, BRANCH)
+    assert failing(result) == set(), result.to_json()
 
 
 @pytest.mark.godot

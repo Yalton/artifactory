@@ -25,7 +25,7 @@ public partial class MoveCheck : Node
     private Node3D _p;
     private Vector3 _a, _b, _c;
     private string _why = "";
-    private bool _seen;
+    private string _view0 = "";
 
     public override void _Ready()
     {
@@ -40,7 +40,7 @@ public partial class MoveCheck : Node
         {
             var n = GetTree().GetNodesInGroup("player").OfType<Node3D>().ToList();
             if (n.Count == 1) _p = n[0]; else _why = $"{n.Count} Node3D in group player (need exactly 1)";
-            _a = _p?.GlobalPosition ?? default; _seen = Seen(); Press(Key.W, true); _stage = 1;
+            _a = _p?.GlobalPosition ?? default; _view0 = Unseen(); Press(Key.W, true); _stage = 1;
         }
         else if (_stage == 1 && t >= 2) { Press(Key.W, false); _b = _p?.GlobalPosition ?? default; Press(Key.D, true); _stage = 2; }
         else if (_stage == 2 && t >= 3)
@@ -49,20 +49,38 @@ public partial class MoveCheck : Node
             Vector3 w = Flat(_b - _a), d = Flat(_c - _b);
             Vector3 dw = w.Normalized(), dd = d.Normalized();
             bool ok = _p != null && w.Length() is >= 0.5f and <= 20f && d.Length() is >= 0.5f and <= 20f && dw.Z < -0.7f && dd.X > 0.7f;
-            bool seen = _seen && Seen();
+            string view1 = Unseen(), view = _view0 != "" ? _view0 : view1;
+            bool seen = view == "";
             if (_why != "") GD.PrintErr("MOVECHECK FAIL: " + _why);
-            GD.Print($"MOVECHECK ok={(ok && seen).ToString().ToLower()} camera_sees_player={seen.ToString().ToLower()} w={F(w.Length())} d={F(d.Length())} dir_w={dw} dir_d={dd}");
+            GD.Print($"MOVECHECK ok={(ok && seen).ToString().ToLower()} camera_sees_player={(seen ? "true" : view)} w={F(w.Length())} d={F(d.Length())} dir_w={dw} dir_d={dd}");
             GetTree().Quit(ok && seen ? 0 : 1);
         }
     }
 
-    private bool Seen()
+    // "" when the current camera sees a drawn mesh of the player at 16:9, else why not.
+    private string Unseen()
     {
         Camera3D cam = GetViewport().GetCamera3D();
-        if (_p == null || cam == null || !cam.IsPositionInFrustum(_p.GlobalPosition)) return false;
-        var ray = PhysicsRayQueryParameters3D.Create(cam.GlobalPosition, _p.GlobalPosition);
-        if (_p is CollisionObject3D body) ray.Exclude = new Godot.Collections.Array<Rid> { body.GetRid() };
-        return GetViewport().World3D.DirectSpaceState.IntersectRay(ray).Count == 0; // nothing solid in between
+        if (_p == null) return "no_player";
+        if (cam == null) return "no_camera";
+        if (_p.IsAncestorOf(cam) && cam.GlobalPosition.DistanceTo(_p.GlobalPosition) <= 2f) return ""; // first person
+        var meshes = _p.FindChildren("*", "GeometryInstance3D", true, false).OfType<GeometryInstance3D>()
+            .Where(g => g.IsVisibleInTree() && (g is not MeshInstance3D mi
+                || (mi.Mesh?.GetRid() is Rid r && r.IsValid && RenderingServer.MeshGetSurfaceCount(r) > 0))).ToList();
+        if (meshes.Count == 0) return "no_drawn_mesh";
+        var own = new Godot.Collections.Array<Rid>(_p.FindChildren("*", "CollisionObject3D", true, false)
+            .OfType<CollisionObject3D>().Append(_p as CollisionObject3D).Where(b => b != null).Select(b => b.GetRid()));
+        bool framed = false;
+        foreach (var g in meshes)
+        {
+            Vector3 c = g.GlobalTransform * g.GetAabb().GetCenter(), l = cam.GlobalTransform.AffineInverse() * c;
+            float half = -l.Z * Mathf.Tan(Mathf.DegToRad(cam.Fov / 2f)); // headless viewports are 64x64, so frame at 16:9 by hand
+            if (-l.Z < cam.Near || Mathf.Abs(l.Y) > half || Mathf.Abs(l.X) > half * 16f / 9f) continue;
+            framed = true;
+            var ray = PhysicsRayQueryParameters3D.Create(cam.GlobalPosition, c); ray.Exclude = own;
+            if (GetViewport().World3D.DirectSpaceState.IntersectRay(ray).Count == 0) return "";
+        }
+        return framed ? "blocked" : "out_of_frame";
     }
 
     private static Vector3 Flat(Vector3 v) => new(v.X, 0, v.Z);
@@ -78,7 +96,7 @@ Add the autoload `MoveCheck="*res://MoveCheck.cs"` under `[autoload]`, run `dotn
 timeout 30 godot --headless --path . -- --move-check
 ```
 
-It passes only if it prints `MOVECHECK ok=true` and no `ERROR:` line. No `MOVECHECK` line within 30 s is a failure: check the autoload line and `dotnet build`. It fails if the node in group `player` is not exactly one Node3D, or W and D do not move it about 0.5 to 20 units (W along -Z, D along +X), or no current `Camera3D` sees the player before and after it moves, with no wall, floor or ceiling collider in between (`camera_sees_player=false`). Fix the cause and re-run until it passes.
+It passes only if it prints `MOVECHECK ok=true` and no `ERROR:` line. No `MOVECHECK` line within 30 s is a failure: check the autoload line and `dotnet build`. It fails if the node in group `player` is not exactly one Node3D, or W and D do not move it about 0.5 to 20 units (W along -Z, D along +X), or the camera cannot see the player before and after it moves. Then `camera_sees_player` names why: `no_camera`, `no_drawn_mesh` (the player has no visible built-in mesh such as `CapsuleMesh`), `out_of_frame`, or `blocked` (a wall, floor or ceiling collider is in between). Fix the cause and re-run until it passes.
 
 ### Player pitfalls
 
@@ -89,7 +107,8 @@ It passes only if it prints `MOVECHECK ok=true` and no `ERROR:` line. No `MOVECH
 - Only the body joins group `player`, not its mesh.
 - Set `Position`/`GlobalPosition` after `AddChild`, not before.
 - Spawn the player above the floor.
-- Add a `Camera3D` with `Current = true` inside the room that keeps the player in view (a ceiling or wall between them hides it), and a light. Without a camera the window is plain grey even though the game runs.
+- Add a `Camera3D` with `Current = true` inside the room that keeps the player in view (a ceiling or wall between them hides it), and a light. Without a camera the window is plain grey even though the game runs. A camera parented to the player within 2 units counts as first person.
+- Give the player a built-in mesh (`new MeshInstance3D { Mesh = new CapsuleMesh() }`). Never subclass `Mesh`: a C# `Mesh` subclass draws nothing.
 - Never pass `--editor`.
 
 Never delete `.godot/`. If autoloads report "is not compiling", run `dotnet build`, then `godot --headless --import`.
