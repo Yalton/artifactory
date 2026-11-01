@@ -11,7 +11,7 @@ Each installed kit's marker must appear and no `ERROR:` line may be printed.
 
 Also print a line from each of your own scripts' `_Ready` (for example `GD.Print("[Player] ready")`) and confirm it appears. Kit markers do not prove your scripts are attached.
 
-Then check movement. Copy this to `MoveCheck.cs` in the project root. It does nothing unless run with `--move-check`:
+Then check movement and the camera. Copy this to `MoveCheck.cs` in the project root. It does nothing unless run with `--move-check`:
 
 ```csharp
 using System.Globalization;
@@ -25,6 +25,7 @@ public partial class MoveCheck : Node
     private Node3D _p;
     private Vector3 _a, _b, _c;
     private string _why = "";
+    private bool _seen;
 
     public override void _Ready()
     {
@@ -39,7 +40,7 @@ public partial class MoveCheck : Node
         {
             var n = GetTree().GetNodesInGroup("player").OfType<Node3D>().ToList();
             if (n.Count == 1) _p = n[0]; else _why = $"{n.Count} Node3D in group player (need exactly 1)";
-            _a = _p?.GlobalPosition ?? default; Press(Key.W, true); _stage = 1;
+            _a = _p?.GlobalPosition ?? default; _seen = Seen(); Press(Key.W, true); _stage = 1;
         }
         else if (_stage == 1 && t >= 2) { Press(Key.W, false); _b = _p?.GlobalPosition ?? default; Press(Key.D, true); _stage = 2; }
         else if (_stage == 2 && t >= 3)
@@ -48,10 +49,20 @@ public partial class MoveCheck : Node
             Vector3 w = Flat(_b - _a), d = Flat(_c - _b);
             Vector3 dw = w.Normalized(), dd = d.Normalized();
             bool ok = _p != null && w.Length() is >= 0.5f and <= 20f && d.Length() is >= 0.5f and <= 20f && dw.Z < -0.7f && dd.X > 0.7f;
+            bool seen = _seen && Seen();
             if (_why != "") GD.PrintErr("MOVECHECK FAIL: " + _why);
-            GD.Print($"MOVECHECK ok={ok.ToString().ToLower()} w={F(w.Length())} d={F(d.Length())} dir_w={dw} dir_d={dd}");
-            GetTree().Quit(ok ? 0 : 1);
+            GD.Print($"MOVECHECK ok={(ok && seen).ToString().ToLower()} camera_sees_player={seen.ToString().ToLower()} w={F(w.Length())} d={F(d.Length())} dir_w={dw} dir_d={dd}");
+            GetTree().Quit(ok && seen ? 0 : 1);
         }
+    }
+
+    private bool Seen()
+    {
+        Camera3D cam = GetViewport().GetCamera3D();
+        if (_p == null || cam == null || !cam.IsPositionInFrustum(_p.GlobalPosition)) return false;
+        var ray = PhysicsRayQueryParameters3D.Create(cam.GlobalPosition, _p.GlobalPosition);
+        if (_p is CollisionObject3D body) ray.Exclude = new Godot.Collections.Array<Rid> { body.GetRid() };
+        return GetViewport().World3D.DirectSpaceState.IntersectRay(ray).Count == 0; // nothing solid in between
     }
 
     private static Vector3 Flat(Vector3 v) => new(v.X, 0, v.Z);
@@ -67,7 +78,7 @@ Add the autoload `MoveCheck="*res://MoveCheck.cs"` under `[autoload]`, run `dotn
 timeout 30 godot --headless --path . -- --move-check
 ```
 
-It passes only if it prints `MOVECHECK ok=true` and no `ERROR:` line. No `MOVECHECK` line within 30 s is a failure: check the autoload line and `dotnet build`. It fails if the node in group `player` is not exactly one Node3D, or W and D do not move it about 0.5 to 20 units (W along -Z, D along +X). Fix the cause and re-run until it passes.
+It passes only if it prints `MOVECHECK ok=true` and no `ERROR:` line. No `MOVECHECK` line within 30 s is a failure: check the autoload line and `dotnet build`. It fails if the node in group `player` is not exactly one Node3D, or W and D do not move it about 0.5 to 20 units (W along -Z, D along +X), or no current `Camera3D` sees the player before and after it moves, with no wall, floor or ceiling collider in between (`camera_sees_player=false`). Fix the cause and re-run until it passes.
 
 ### Player pitfalls
 
@@ -78,6 +89,7 @@ It passes only if it prints `MOVECHECK ok=true` and no `ERROR:` line. No `MOVECH
 - Only the body joins group `player`, not its mesh.
 - Set `Position`/`GlobalPosition` after `AddChild`, not before.
 - Spawn the player above the floor.
+- Add a `Camera3D` with `Current = true` inside the room that keeps the player in view (a ceiling or wall between them hides it), and a light. Without a camera the window is plain grey even though the game runs.
 - Never pass `--editor`.
 
 Never delete `.godot/`. If autoloads report "is not compiling", run `dotnet build`, then `godot --headless --import`.

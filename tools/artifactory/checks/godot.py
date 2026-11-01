@@ -53,10 +53,12 @@ def check_godot(project: Path, test: AcceptanceTest, mirrors: Path, branch: str,
         if run is None:
             runs = CheckResult("runs", False, "not run: build failed")
             moves = CheckResult("player_moves", False, "not run: build failed")
+            visible = CheckResult("player_visible", False, "not run: build failed")
             output = ""
         else:
             runs = _check_runs(run, copy, _blank_errors(test.fixture))
-            moves = _check_moves(run)
+            moves = _check_probe(run, "player_moves")
+            visible = _check_probe(run, "player_visible")
             output = run.output
         live = _check_live(copy, test.modules, output)
 
@@ -66,7 +68,7 @@ def check_godot(project: Path, test: AcceptanceTest, mirrors: Path, branch: str,
         unmodified = CheckResult("modules_unmodified", False,
                                  f"manual: judge kit edits from the tree (automatic: {unmodified.detail})")
 
-    checks = [build, runs, moves, installed_check, live, unmodified, duplication]
+    checks = [build, runs, moves, visible, installed_check, live, unmodified, duplication]
     return TrialResult(test=test.name, trial=project.name, checks=checks, reason=None)
 
 
@@ -317,12 +319,13 @@ def _check_runs(run: _Proc, project: Path, blank_errors: set[str]) -> CheckResul
     return CheckResult("runs", True, f"exited 0 after {run.seconds:.1f}s with no new errors")
 
 
-def _check_moves(run: _Proc) -> CheckResult:
-    probe = [l.strip() for l in run.output.splitlines() if l.strip().startswith("PROBE ")]
+def _check_probe(run: _Proc, name: str) -> CheckResult:
+    """The probe's last `PROBE <name>=...` line decides the check."""
+    probe = [l.strip() for l in run.output.splitlines() if l.strip().startswith(f"PROBE {name}=")]
     if not probe:
-        return CheckResult("player_moves", False, "probe never reported (game did not run to 3 s)")
+        return CheckResult(name, False, "probe never reported (game did not run to 3 s)")
     line = probe[-1]
-    return CheckResult("player_moves", "player_moves=true" in line.split(), line)
+    return CheckResult(name, f"{name}=true" in line.split(), line)
 
 
 def _marker(project: Path, name: str) -> str:

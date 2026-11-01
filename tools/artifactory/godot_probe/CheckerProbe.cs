@@ -1,5 +1,6 @@
 // Injected by the Artifactory Godot checker into a copy of the trial project.
-// Presses W, then D, and reports whether the node in group "player" moved.
+// Presses W, then D, and reports whether the node in group "player" moved
+// and whether the current Camera3D sees it before and after moving.
 using System.Globalization;
 using Godot;
 
@@ -12,6 +13,7 @@ public partial class CheckerProbe : Node
     private Node3D _player;
     private Vector3 _p0, _p1, _p2;
     private string _problem;
+    private bool _seenStart;
 
     public override void _Ready()
     {
@@ -27,6 +29,7 @@ public partial class CheckerProbe : Node
             case 0 when t >= 1.0:
                 FindPlayer();
                 if (_player != null) _p0 = _player.GlobalPosition;
+                _seenStart = InView();
                 SendKey(Key.W, true);
                 _stage = 1;
                 break;
@@ -93,6 +96,7 @@ public partial class CheckerProbe : Node
         if (!Valid())
         {
             GD.Print($"PROBE player_moves=false w=0 d=0 problem={_problem}");
+            GD.Print($"PROBE player_visible=false problem={_problem}");
             return;
         }
         Vector3 w = _p1 - _p0;
@@ -102,5 +106,19 @@ public partial class CheckerProbe : Node
         string ws = w.Length().ToString("0.###", CultureInfo.InvariantCulture);
         string ds = d.Length().ToString("0.###", CultureInfo.InvariantCulture);
         GD.Print($"PROBE player_moves={(differ ? "true" : "false")} w={ws} d={ds}");
+        Camera3D cam = GetViewport().GetCamera3D();
+        bool seenEnd = InView();
+        string camName = cam == null ? "none" : cam.Name.ToString();
+        GD.Print($"PROBE player_visible={(_seenStart && seenEnd ? "true" : "false")} camera={camName} start={(_seenStart ? "in_view" : "out")} end={(seenEnd ? "in_view" : "out")}");
+    }
+
+    // In the current camera's frustum, with no collider between the camera and the player.
+    private bool InView()
+    {
+        Camera3D cam = GetViewport().GetCamera3D();
+        if (!Valid() || cam == null || !cam.IsPositionInFrustum(_player.GlobalPosition)) return false;
+        var ray = PhysicsRayQueryParameters3D.Create(cam.GlobalPosition, _player.GlobalPosition);
+        if (_player is CollisionObject3D body) ray.Exclude = new Godot.Collections.Array<Rid> { body.GetRid() };
+        return GetViewport().World3D.DirectSpaceState.IntersectRay(ray).Count == 0;
     }
 }

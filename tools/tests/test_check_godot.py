@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DATA = Path(__file__).resolve().parent / "data" / "godot"
 BLANK = ROOT / "fixtures" / "godot-blank"
 KITS = ["StubAKit", "StubBKit"]
-NAMES = ["build", "runs", "player_moves", "modules_installed", "modules_live", "modules_unmodified", "no_duplication"]
+NAMES = ["build", "runs", "player_moves", "player_visible", "modules_installed", "modules_live", "modules_unmodified", "no_duplication"]
 BRANCH = "stitchability"
 
 
@@ -104,6 +104,7 @@ def test_good_project_passes_all(tmp_path):
     assert result.passed, result.to_json()
     assert all(c.passed for c in checks.values())
     assert "w=" in checks["player_moves"].detail
+    assert "camera=Camera3D" in checks["player_visible"].detail
     assert result.reason is None
     # The input project is never modified.
     assert git("status", "--porcelain", "--ignored", cwd=project) == before
@@ -116,6 +117,43 @@ def test_player_not_moving_fails_player_moves(tmp_path):
     shutil.copy(DATA / "variants" / "PlayerStill.cs", project / "Player.cs")
     result = check_godot(project, acceptance(), mirrors, BRANCH)
     assert failing(result) == {"player_moves"}, result.to_json()
+
+
+@pytest.mark.godot
+def test_no_camera_fails_player_visible(tmp_path):
+    project, mirrors = make_project(tmp_path)
+    scene = project / "Main.tscn"
+    scene.write_text(scene.read_text().split("\n[node name=\"Camera3D\"")[0])
+    result = check_godot(project, acceptance(), mirrors, BRANCH)
+    assert failing(result) == {"player_visible"}, result.to_json()
+    assert "camera=none" in by_name(result)["player_visible"].detail
+
+
+@pytest.mark.godot
+def test_camera_facing_away_fails_player_visible(tmp_path):
+    project, mirrors = make_project(tmp_path)
+    scene = project / "Main.tscn"
+    # Same position, rotated 180 degrees about Y: looks along +Z, away from the player.
+    scene.write_text(scene.read_text().replace(
+        "Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 10)",
+        "Transform3D(-1, 0, 0, 0, 1, 0, 0, 0, -1, 0, 1, 10)"))
+    result = check_godot(project, acceptance(), mirrors, BRANCH)
+    assert failing(result) == {"player_visible"}, result.to_json()
+    assert "start=out" in by_name(result)["player_visible"].detail
+
+
+@pytest.mark.godot
+def test_wall_between_camera_and_player_fails_player_visible(tmp_path):
+    project, mirrors = make_project(tmp_path)
+    scene = project / "Main.tscn"
+    text = scene.read_text().replace("load_steps=2", "load_steps=3")
+    text = text.replace('[node name="Main"', '[sub_resource type="BoxShape3D" id="wall"]\nsize = Vector3(40, 40, 1)\n\n[node name="Main"')
+    text += '\n[node name="Wall" type="StaticBody3D" parent="."]\ntransform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 7)\n\n'
+    text += '[node name="Shape" type="CollisionShape3D" parent="Wall"]\nshape = SubResource("wall")\n'
+    scene.write_text(text)
+    result = check_godot(project, acceptance(), mirrors, BRANCH)
+    assert failing(result) == {"player_visible"}, result.to_json()
+    assert "camera=Camera3D start=out" in by_name(result)["player_visible"].detail
 
 
 @pytest.mark.godot
@@ -209,6 +247,7 @@ def test_godot_run_timeout_is_failure(tmp_path, monkeypatch):
     assert not checks["runs"].passed
     assert "timed out" in checks["runs"].detail
     assert not checks["player_moves"].passed
+    assert not checks["player_visible"].passed
     assert result.reason is None
 
 
