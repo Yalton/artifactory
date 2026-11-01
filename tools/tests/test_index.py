@@ -4,10 +4,10 @@ from artifactory.descriptor import Descriptor
 from artifactory.index import build_index, index_preamble
 
 
-def desc(name, replaces=("thing",)):
+def desc(name, replaces=("thing",), setup=()):
     return Descriptor(
         name=name, ecosystem="go", version="1", summary=f"{name} summary",
-        replaces=list(replaces), install=f"go get x/{name}", setup=[], entry=[],
+        replaces=list(replaces), install=f"go get x/{name}", setup=list(setup), entry=[],
         liveness="l", docs="d", example="e", test="t", path=Path("."),
     )
 
@@ -22,6 +22,14 @@ def test_index_lists_name_summary_replaces_install_for_each_module():
     for n, r in (("alpha", "a thing"), ("zed", "z thing")):
         assert f"{n} summary" in out and f"- {r}" in out and f"go get x/{n}" in out
     assert "Use instead of writing:" in out
+
+
+def test_index_renders_setup_after_install_only_when_present():
+    with_setup = desc("alpha", setup=["add the autoload", "bind a key"])
+    out = build_index([with_setup, desc("zed")], "P")
+    assert out.index("go get x/alpha") < out.index("Setup:") < out.index("- add the autoload")
+    assert out.index("- bind a key") < out.index("## zed")
+    assert out.count("Setup:") == 1
 
 
 def test_index_for_eight_modules_under_2000_words():

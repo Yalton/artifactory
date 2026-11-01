@@ -31,4 +31,8 @@ def build_index(descriptors: list[Descriptor], preamble: str) -> str:
         parts.append(d.install)
         parts.append("```")
         parts.append("")
+        if d.setup:
+            parts.append("Setup:")
+            parts.extend(f"- {s}" for s in d.setup)
+            parts.append("")
     return "\n".join(parts)

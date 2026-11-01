@@ -16,5 +16,5 @@ A module is stitchable when a weak model can find it, install it, wire it in and
 4. **Every installed module must be live.** It must be reachable from the program's real entry point, not only from tests. Each profile defines the check.
 5. **Every module ships a worked example** showing it wired into a minimal host, short enough to read whole.
 6. **Required setup is a defect to minimise.** Each `setup` step is a place a weak model can skip. A module that can work with zero setup should.
-7. **A module index** is a single generated file listing every module's `name`, `summary`, `replaces` and `install`. The model reads it before writing code. It is built only from descriptors.
+7. **A module index** is a single generated file listing every module's `name`, `summary`, `replaces`, `install` and `setup`. The model reads it before writing code. It is built only from descriptors.
 8. **The index opens with a short consumer preamble** telling the model to read the index before writing code, install only with each module's `install` command, never edit module files, and wire every module it installs into the real entry point. The preamble is versioned with this standard.
