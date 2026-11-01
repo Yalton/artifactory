@@ -63,6 +63,6 @@ To attach a script, put `script = ...` on its own line under the `[node ...]` he
 script = ExtResource("1_player")
 ```
 
-Keep `.tscn` files to a root node and a script. Create meshes, lights and colliders in C# `_Ready()`, and join groups with `AddToGroup()` in code, not `groups=[...]`.
+Keep each `.tscn` to its root node, its `instance=` nodes and a script. Create meshes, lights and colliders in C# `_Ready()`, and join groups with `AddToGroup()` in code, not `groups=[...]`.
 
 Never write or edit `.uid` files or `uid=` attributes. Omit them. Godot generates them on import. `.uid` files under `addons/` belong to the kit.

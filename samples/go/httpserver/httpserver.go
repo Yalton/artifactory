@@ -20,9 +20,13 @@ type options struct {
 }
 
 // WithContext stops the server when ctx is cancelled. It is for tests and
-// embedding; a normal main does not need it.
+// embedding; a normal main does not need it. A nil ctx is ignored.
 func WithContext(ctx context.Context) Option {
-	return func(o *options) { o.ctx = ctx }
+	return func(o *options) {
+		if ctx != nil {
+			o.ctx = ctx
+		}
+	}
 }
 
 // WithHealthCheck makes GET /healthz return 503 when fn returns an error.
