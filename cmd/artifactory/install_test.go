@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -129,5 +130,69 @@ func TestInstallErrors(t *testing.T) {
 	}
 	if code, _, _ := runCmd("install", "--project", proj); code != 2 {
 		t.Errorf("no names: exit %d, want 2", code)
+	}
+}
+
+// setupTwoKits builds a dir: catalog of plain folders AKit and BKit and a
+// godot-csharp project on it. AKit installs by copying its descriptor into
+// addons/AKit; BKit's install line fails.
+func setupTwoKits(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	for name, line := range map[string]string{
+		"AKit": "mkdir -p addons/AKit && cp " + filepath.Join(root, "AKit", "module.yaml") + " addons/AKit/",
+		"BKit": "false",
+	} {
+		dir := filepath.Join(root, name)
+		os.Mkdir(dir, 0o755)
+		y := "name: " + name + "\necosystem: godot-csharp\nversion: 0.1.0\nsummary: A kit.\nreplaces: [x]\n" +
+			"install: \"" + line + "\"\nsetup: []\nentry: [X.Y]\nliveness: \"[" + name + "] live\"\n" +
+			"docs: README.md\nexample: README.md\ntest: \"true\"\n"
+		os.WriteFile(filepath.Join(dir, "module.yaml"), []byte(y), 0o644)
+	}
+	proj := t.TempDir()
+	os.WriteFile(filepath.Join(proj, "project.godot"), nil, 0o644)
+	if code, _, se := runCmd("init", "--project", proj, "--provider", "dir:"+root); code != 0 {
+		t.Fatalf("init: %d %s", code, se)
+	}
+	return proj
+}
+
+func TestInstallPartialFailureReindexes(t *testing.T) {
+	proj := setupTwoKits(t)
+	code, so, se := runCmd("install", "AKit", "BKit", "--project", proj)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (stdout %q stderr %q)", code, so, se)
+	}
+	if !strings.Contains(se, "installed before the failure: AKit (v0.1.0)") {
+		t.Errorf("stderr lacks installed list: %q", se)
+	}
+	md, _ := os.ReadFile(filepath.Join(proj, "MODULES.md"))
+	if !strings.Contains(string(md), "## AKit") || strings.Contains(string(md), "## BKit") {
+		t.Errorf("MODULES.md:\n%s", md)
+	}
+	agents, _ := os.ReadFile(filepath.Join(proj, "AGENTS.md"))
+	if len(agents) == 0 {
+		t.Error("AGENTS.md block not written")
+	}
+}
+
+func TestInstallPartialFailureJSON(t *testing.T) {
+	proj := setupTwoKits(t)
+	code, so, _ := runCmd("install", "--json", "AKit", "BKit", "--project", proj)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	var v struct {
+		Error     string `json:"error"`
+		Installed []struct {
+			Name, Version string
+		} `json:"installed"`
+	}
+	if err := json.Unmarshal([]byte(so), &v); err != nil {
+		t.Fatalf("%v: %q", err, so)
+	}
+	if v.Error == "" || len(v.Installed) != 1 || v.Installed[0].Name != "AKit" || v.Installed[0].Version != "0.1.0" {
+		t.Errorf("json = %+v", v)
 	}
 }

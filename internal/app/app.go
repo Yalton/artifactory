@@ -212,7 +212,8 @@ type InstallResult struct {
 
 // Install runs each module's install line and records the installed version.
 // All names are checked first. Each success is saved at once, so a failure
-// stops at that module with earlier modules still recorded. progress, if
+// stops at that module with earlier modules still recorded; the project is
+// then re-indexed and the error and result name the modules installed. progress, if
 // non-nil, is called with a line per skipped or installed module as it
 // happens.
 func (a App) Install(ctx context.Context, dir string, names []string, progress func(string)) (InstallResult, error) {
@@ -253,17 +254,40 @@ func (a App) Install(ctx context.Context, dir string, names []string, progress f
 		}
 		v, err := install.Run(ctx, dir, m)
 		if err != nil {
-			return res, problemErr(err.Error())
+			return a.partial(ctx, dir, res, problemErr(err.Error()))
 		}
 		f.Modules = setEntry(f.Modules, project.Entry{Name: m.Name, Version: v})
 		if err := project.Save(dir, f); err != nil {
-			return res, usageErr(err)
+			return a.partial(ctx, dir, res, usageErr(err))
 		}
 		res.Installed = append(res.Installed, Installed{m.Name, v})
 		say(fmt.Sprintf("installed %s (v%s)", m.Name, strings.TrimPrefix(v, "v")))
 	}
 	res.Index, err = a.Index(ctx, dir, false)
 	return res, err
+}
+
+// partial finishes an Install that failed with err. When earlier modules
+// were installed it re-indexes the project so MODULES.md and AGENTS.md list
+// them, and names them in the error.
+func (a App) partial(ctx context.Context, dir string, res InstallResult, err error) (InstallResult, error) {
+	if len(res.Installed) == 0 {
+		return res, err
+	}
+	var e *Error
+	errors.As(err, &e)
+	var names []string
+	for _, in := range res.Installed {
+		names = append(names, fmt.Sprintf("%s (v%s)", in.Name, strings.TrimPrefix(in.Version, "v")))
+	}
+	msg := e.Msg + "; installed before the failure: " + strings.Join(names, ", ")
+	idx, ierr := a.Index(ctx, dir, false)
+	if ierr != nil {
+		msg += "; re-index failed: " + ierr.Error()
+	} else {
+		res.Index = idx
+	}
+	return res, &Error{e.Code, msg}
 }
 
 func entryVersion(es []project.Entry, name string) string {

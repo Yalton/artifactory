@@ -127,3 +127,32 @@ func TestMCPIndex(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+func TestInstallToolPartialFailureNamesInstalled(t *testing.T) {
+	root := t.TempDir()
+	for name, line := range map[string]string{
+		"AKit": "mkdir -p addons/AKit && cp " + filepath.Join(root, "AKit", "module.yaml") + " addons/AKit/",
+		"BKit": "false",
+	} {
+		dir := filepath.Join(root, name)
+		os.Mkdir(dir, 0o755)
+		y := "name: " + name + "\necosystem: godot-csharp\nversion: 0.1.0\nsummary: A kit.\nreplaces: [x]\n" +
+			"install: \"" + line + "\"\nsetup: []\nentry: [X.Y]\nliveness: \"[" + name + "] live\"\n" +
+			"docs: README.md\nexample: README.md\ntest: \"true\"\n"
+		os.WriteFile(filepath.Join(dir, "module.yaml"), []byte(y), 0o644)
+	}
+	proj := t.TempDir()
+	os.WriteFile(filepath.Join(proj, "artifactory.yaml"), []byte("ecosystem: godot-csharp\nprovider: dir:"+root+"\n"), 0o644)
+	cs := connect(t, proj)
+	r, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "install", Arguments: map[string]any{"names": []string{"AKit", "BKit"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.IsError || !strings.Contains(text(t, r), "installed before the failure: AKit (v0.1.0)") {
+		t.Errorf("isError=%v text=%q", r.IsError, text(t, r))
+	}
+	md, _ := os.ReadFile(filepath.Join(proj, "MODULES.md"))
+	if !strings.Contains(string(md), "## AKit") {
+		t.Errorf("MODULES.md:\n%s", md)
+	}
+}

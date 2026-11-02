@@ -10,7 +10,8 @@ import (
 // runInstall runs each module's install line and records the installed
 // version. All names are checked first. Each success is saved at once, so a
 // failure stops at that module with earlier modules still recorded and
-// artifactory.yaml and MODULES.md untouched for the failing one.
+// re-indexed, and artifactory.yaml and MODULES.md untouched for the failing
+// one. The error names the modules installed before it.
 func runInstall(out *output, args []string) int {
 	const use = "usage: artifactory install NAME... [--project DIR]"
 	names, rest := splitArgs(args)
@@ -28,6 +29,10 @@ func runInstall(out *output, args []string) int {
 	}
 	res, err := app.App{Refresh: refreshCache}.Install(context.Background(), *dir, names, progress)
 	if err != nil {
+		if out.json && len(res.Installed) > 0 {
+			out.result("", map[string]any{"error": err.Error(), "installed": res.Installed})
+			return app.Code(err)
+		}
 		return out.fail(app.Code(err), err.Error())
 	}
 	if out.json {
