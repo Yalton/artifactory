@@ -70,7 +70,7 @@ func (d *dirProvider) path(repo string) (string, error) {
 			return p, nil
 		}
 	}
-	return "", fmt.Errorf("repo %q not found in %s", repo, d.root)
+	return "", fmt.Errorf("repo %q in %s: %w", repo, d.root, ErrNotFound)
 }
 
 func isGit(p string) bool {
@@ -129,9 +129,17 @@ func (d *dirProvider) ReadFile(ctx context.Context, repo, ref, path string) ([]b
 		if strings.HasPrefix(ref, "-") {
 			return nil, fmt.Errorf("invalid ref %q", ref)
 		}
-		return runGit(ctx, p, "show", ref+":"+filepath.ToSlash(clean))
+		b, err := runGit(ctx, p, "show", ref+":"+filepath.ToSlash(clean))
+		if err != nil && (strings.Contains(err.Error(), "does not exist") || strings.Contains(err.Error(), "exists on disk")) {
+			return nil, fmt.Errorf("%s at %s: %w", path, ref, ErrNotFound)
+		}
+		return b, err
 	}
-	return os.ReadFile(filepath.Join(p, clean))
+	b, err := os.ReadFile(filepath.Join(p, clean))
+	if os.IsNotExist(err) {
+		return nil, fmt.Errorf("%s: %w", path, ErrNotFound)
+	}
+	return b, err
 }
 
 // Ensure creates <repo>.git as a bare repo when the repo is missing and

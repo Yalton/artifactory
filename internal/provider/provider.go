@@ -3,9 +3,13 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 )
+
+// ErrNotFound is returned (possibly wrapped) when a repo or file is missing.
+var ErrNotFound = errors.New("not found")
 
 // Provider is a place that holds one repo per module.
 type Provider interface {
@@ -21,8 +25,8 @@ type Provider interface {
 	Ensure(ctx context.Context, repo string) (pushURL string, err error)
 }
 
-// Open returns the provider named by spec: "dir:<path>". Other schemes are
-// added here.
+// Open returns the provider named by spec: "dir:<path>" or
+// "forgejo:<host>/<org>".
 func Open(spec string) (Provider, error) {
 	scheme, rest, ok := strings.Cut(spec, ":")
 	if !ok {
@@ -31,6 +35,8 @@ func Open(spec string) (Provider, error) {
 	switch scheme {
 	case "dir":
 		return openDir(rest)
+	case "forgejo":
+		return openForgejo(rest)
 	}
 	return nil, fmt.Errorf("unknown provider scheme %q in %q", scheme, spec)
 }

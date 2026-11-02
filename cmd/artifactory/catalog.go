@@ -5,7 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"repo.billbert.co/artifactory/artifactory/internal/catalog"
 	"repo.billbert.co/artifactory/artifactory/internal/provider"
@@ -15,9 +18,30 @@ import (
 // artifactory.yaml step here.
 func resolveProvider(flagSpec string) (provider.Provider, error) {
 	if flagSpec != "" {
-		return provider.Open(flagSpec)
+		p, err := provider.Open(flagSpec)
+		if err != nil {
+			return nil, err
+		}
+		return maybeCache(p), nil
 	}
 	return nil, fmt.Errorf("no provider: pass --provider or run artifactory init")
+}
+
+// refreshCache is set by the global --refresh flag: skip cache reads.
+var refreshCache bool
+
+const cacheTTL = 10 * time.Minute
+
+// maybeCache wraps remote (forgejo:) providers in the on-disk catalog cache.
+func maybeCache(p provider.Provider) provider.Provider {
+	if !strings.HasPrefix(p.Spec(), "forgejo:") {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return p
+	}
+	return provider.CachedRefresh(p, filepath.Join(home, ".cache", "artifactory"), cacheTTL, refreshCache)
 }
 
 // newFlags returns a quiet FlagSet for a command.

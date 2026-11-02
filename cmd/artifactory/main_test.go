@@ -125,3 +125,10 @@ func TestRunShowSample(t *testing.T) {
 		t.Errorf("code=%d out=%q err=%q", code, so.String(), se.String())
 	}
 }
+
+func TestExtractRefreshFlag(t *testing.T) {
+	got, found := extractFlag([]string{"catalog", "--refresh", "--provider", "x", "--", "--refresh"}, "refresh")
+	if !found || strings.Join(got, " ") != "catalog --provider x -- --refresh" {
+		t.Errorf("got %v, %v", got, found)
+	}
+}

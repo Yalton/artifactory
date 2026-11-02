@@ -25,6 +25,7 @@ func main() {
 func run(args []string, stdout, stderr io.Writer) int {
 	out := &output{stdout: stdout, stderr: stderr}
 	args, out.json = extractJSONFlag(args)
+	args, refreshCache = extractFlag(args, "refresh")
 
 	if len(args) == 0 {
 		fmt.Fprint(stderr, usage())
@@ -45,6 +46,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 // extractJSONFlag removes --json from args (before any "--") so every
 // command accepts it in any position.
 func extractJSONFlag(args []string) ([]string, bool) {
+	return extractFlag(args, "json")
+}
+
+// extractFlag removes the boolean flag --name (or -name) from args, before
+// any "--", and reports whether it was present.
+func extractFlag(args []string, name string) ([]string, bool) {
 	var kept []string
 	found := false
 	for i, a := range args {
@@ -52,7 +59,7 @@ func extractJSONFlag(args []string) ([]string, bool) {
 			kept = append(kept, args[i:]...)
 			break
 		}
-		if a == "--json" || a == "-json" {
+		if a == "--"+name || a == "-"+name {
 			found = true
 			continue
 		}
@@ -62,6 +69,6 @@ func extractJSONFlag(args []string) ([]string, bool) {
 }
 
 func usage() string {
-	return "usage: artifactory [--json] <command> [args]\n\ncommands: " +
+	return "usage: artifactory [--json] [--refresh] <command> [args]\n\ncommands: " +
 		strings.Join(commands, ", ") + "\n"
 }
