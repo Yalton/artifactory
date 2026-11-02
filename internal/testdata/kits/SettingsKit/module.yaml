@@ -1,0 +1,22 @@
+name: SettingsKit
+ecosystem: godot-csharp
+version: 0.1.0
+summary: "User settings autoload: audio, video, graphics, accessibility and language, saved to disk."
+replaces:
+  - "an options menu backend for volume, resolution and graphics"
+  - "saving and loading a settings config file"
+  - "creating Music/SFX/Ambience audio buses"
+  - "graphics quality presets"
+  - "mouse sensitivity and FOV settings"
+install: "git submodule add git@repo.billbert.co:artifactory/SettingsKit.git addons/SettingsKit"
+setup:
+  - "project.godot [autoload]: SettingsManager=\"*res://addons/SettingsKit/SettingsManager.cs\""
+entry:
+  - "SettingsManager.Instance"
+  - "SettingsManager.SetMasterVolume"
+  - "SettingsManager.ApplyGraphicsPreset"
+  - "SettingsManager.SaveCurrentSettings"
+liveness: "[SettingsKit] live"
+docs: README.md
+example: README.md#wiring
+test: "godot --headless --path ../SettingsKit.demo -- --smoke"
