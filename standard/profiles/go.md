@@ -21,11 +21,17 @@ Applies Stitchability Standard Draft 0.1.
 
 The first released version is `v0.1.0`. The module's `go.mod` declares `go 1.24`.
 
+## Where modules live
+
+Go modules live as repositories in the Forgejo org `artifactory`, one repo per module, with the version as the git tag `v<version>`. Publish with `artifactory publish <folder> --provider forgejo:repo.billbert.co/artifactory`.
+
 ## Install
 
 ```
 go get repo.billbert.co/artifactory/<name>
 ```
+
+The org repos are private, so set `GOPRIVATE=repo.billbert.co` and let git reach Forgejo over SSH (`git config --global url."git@repo.billbert.co:".insteadOf "https://repo.billbert.co/"`).
 
 ## Liveness
 
