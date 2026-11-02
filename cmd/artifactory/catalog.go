@@ -2,59 +2,23 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"strings"
-	"time"
 
+	"repo.billbert.co/artifactory/artifactory/internal/app"
 	"repo.billbert.co/artifactory/artifactory/internal/catalog"
-	"repo.billbert.co/artifactory/artifactory/internal/project"
 	"repo.billbert.co/artifactory/artifactory/internal/provider"
 )
-
-// resolveProvider opens the provider named by flagSpec, else the one in
-// artifactory.yaml in projectDir ("" means the current directory).
-func resolveProvider(flagSpec, projectDir string) (provider.Provider, error) {
-	spec := flagSpec
-	if spec == "" {
-		if projectDir == "" {
-			projectDir = "."
-		}
-		if f, err := project.Load(projectDir); err == nil {
-			spec = f.Provider
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return nil, err
-		}
-	}
-	if spec != "" {
-		p, err := provider.Open(spec)
-		if err != nil {
-			return nil, err
-		}
-		return maybeCache(p), nil
-	}
-	return nil, fmt.Errorf("no provider: pass --provider or run artifactory init")
-}
 
 // refreshCache is set by the global --refresh flag: skip cache reads.
 var refreshCache bool
 
-const cacheTTL = 10 * time.Minute
-
-// maybeCache wraps remote (forgejo:) providers in the on-disk catalog cache.
-func maybeCache(p provider.Provider) provider.Provider {
-	if !strings.HasPrefix(p.Spec(), "forgejo:") {
-		return p
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return p
-	}
-	return provider.CachedRefresh(p, filepath.Join(home, ".cache", "artifactory"), cacheTTL, refreshCache)
+// resolveProvider opens the provider named by flagSpec, else the one in
+// artifactory.yaml in projectDir ("" means the current directory).
+func resolveProvider(flagSpec, projectDir string) (provider.Provider, error) {
+	return app.App{Refresh: refreshCache}.ResolveProvider(flagSpec, projectDir)
 }
 
 // newFlags returns a quiet FlagSet for a command.
@@ -124,25 +88,11 @@ func runShow(out *output, args []string) int {
 	if name == "" {
 		return out.fail(exitUsage, "usage: artifactory show NAME [--provider SPEC]")
 	}
-	p, err := resolveProvider(*spec, *proj)
+	res, err := app.App{Refresh: refreshCache}.Show(context.Background(), *spec, *proj, name)
 	if err != nil {
-		return out.fail(exitUsage, err.Error())
+		return out.fail(app.Code(err), err.Error())
 	}
-	ctx := context.Background()
-	mods, _, err := catalog.Load(ctx, p)
-	if err != nil {
-		return out.fail(exitUsage, err.Error())
-	}
-	m, ok := catalog.Find(mods, name)
-	if !ok {
-		return out.fail(exitProblems, "no module named "+name)
-	}
-	readme := ""
-	if m.Docs != "" {
-		if b, err := p.ReadFile(ctx, m.Repo, m.Tag, m.Docs); err == nil {
-			readme = string(b)
-		}
-	}
+	m, readme := res.Module, res.Readme
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "%s %s (%s)\n%s\n\n", m.Name, m.Tag, m.Ecosystem, m.Summary)
 	fmt.Fprintf(&sb, "replaces: %s\ninstall: %s\n", strings.Join(m.Replaces, "; "), m.Install)
@@ -154,6 +104,6 @@ func runShow(out *output, args []string) int {
 	if readme != "" {
 		sb.WriteString("\n" + strings.TrimRight(readme, "\n") + "\n")
 	}
-	out.result(strings.TrimRight(sb.String(), "\n"), map[string]any{"module": m, "readme": readme})
+	out.result(strings.TrimRight(sb.String(), "\n"), res)
 	return exitOK
 }

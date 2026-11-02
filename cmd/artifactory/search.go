@@ -5,8 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"repo.billbert.co/artifactory/artifactory/internal/catalog"
-	"repo.billbert.co/artifactory/artifactory/internal/search"
+	"repo.billbert.co/artifactory/artifactory/internal/app"
 )
 
 const searchUsage = "usage: artifactory search WORDS... [--ecosystem E] [--provider SPEC]"
@@ -34,24 +33,19 @@ func runSearch(out *output, args []string) int {
 	if len(words) == 0 {
 		return out.fail(exitUsage, searchUsage)
 	}
-	p, err := resolveProvider(*spec, *proj)
+	res, err := app.App{Refresh: refreshCache}.Search(context.Background(), *spec, *proj, words, *eco)
 	if err != nil {
-		return out.fail(exitUsage, err.Error())
+		return out.fail(app.Code(err), err.Error())
 	}
-	mods, _, err := catalog.Load(context.Background(), p)
-	if err != nil {
-		return out.fail(exitUsage, err.Error())
-	}
-	hits := search.Rank(mods, words, *eco)
+	hits := res.Hits
 	if len(hits) == 0 {
-		out.result(fmt.Sprintf("no module matches %q; record this as a gap", strings.Join(words, " ")),
-			map[string]any{"hits": []search.Hit{}})
+		out.result(fmt.Sprintf("no module matches %q; record this as a gap", strings.Join(words, " ")), res)
 		return exitOK
 	}
 	var lines []string
 	for _, h := range hits {
 		lines = append(lines, fmt.Sprintf("%s  %.0f  %s\ninstall: %s", h.Module.Name, h.Score, h.Module.Summary, h.Module.Install))
 	}
-	out.result(strings.Join(lines, "\n"), map[string]any{"hits": hits})
+	out.result(strings.Join(lines, "\n"), res)
 	return exitOK
 }

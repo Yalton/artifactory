@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"repo.billbert.co/artifactory/artifactory/internal/app"
 	"repo.billbert.co/artifactory/artifactory/internal/catalog"
 	"repo.billbert.co/artifactory/artifactory/internal/descriptor"
-	"repo.billbert.co/artifactory/artifactory/internal/index"
 	"repo.billbert.co/artifactory/artifactory/internal/project"
 	"repo.billbert.co/artifactory/artifactory/skill"
 )
@@ -143,49 +143,21 @@ func runIndex(out *output, args []string) int {
 	return writeIndex(out, *dir, *only)
 }
 
+// writeIndex re-indexes the project and prints the result.
 func writeIndex(out *output, dir string, modulesOnly bool) int {
-	f, err := project.Load(dir)
+	res, err := app.App{Refresh: refreshCache}.Index(context.Background(), dir, modulesOnly)
 	if err != nil {
-		return out.fail(exitUsage, loadProjectMsg(err))
+		return out.fail(app.Code(err), err.Error())
 	}
-	var ds []descriptor.Descriptor
-	if len(f.Modules) > 0 {
-		p, err := resolveProvider("", dir)
-		if err != nil {
-			return out.fail(exitUsage, err.Error())
-		}
-		mods, _, err := catalog.Load(context.Background(), p)
-		if err != nil {
-			return out.fail(exitUsage, err.Error())
-		}
-		for _, e := range f.Modules {
-			m, ok := catalog.Find(mods, e.Name)
-			if !ok {
-				return out.fail(exitProblems, "module "+e.Name+" is in scope but not in the catalog")
-			}
-			ds = append(ds, m.Descriptor)
-		}
-	}
-	written := []string{"MODULES.md"}
-	if err := os.WriteFile(filepath.Join(dir, "MODULES.md"), []byte(index.Render(f.Ecosystem, ds)), 0o644); err != nil {
-		return out.fail(exitUsage, err.Error())
-	}
-	if !modulesOnly {
-		if err := index.WriteAgents(filepath.Join(dir, "AGENTS.md"), index.AgentsBlock(f.Ecosystem)); err != nil {
-			return out.fail(exitUsage, err.Error())
-		}
-		written = append(written, "AGENTS.md")
-	}
-	out.result("wrote "+strings.Join(written, ", "), map[string]any{"written": written, "modules": len(ds)})
+	printIndex(out, res)
 	return exitOK
 }
 
-func loadProjectMsg(err error) string {
-	if os.IsNotExist(err) {
-		return project.FileName + " not found: run artifactory init"
-	}
-	return err.Error()
+func printIndex(out *output, res app.IndexResult) {
+	out.result("wrote "+strings.Join(res.Written, ", "), res)
 }
+
+func loadProjectMsg(err error) string { return app.LoadProjectMsg(err) }
 
 func hasEntry(es []project.Entry, name string) bool {
 	for _, e := range es {
