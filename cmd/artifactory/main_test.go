@@ -92,3 +92,36 @@ func TestRunValidateJSON(t *testing.T) {
 		t.Errorf("got %+v", got)
 	}
 }
+
+func TestRunShowUnknownModule(t *testing.T) {
+	var so, se bytes.Buffer
+	code := run([]string{"show", "nope", "--provider", "dir:../../samples/go"}, &so, &se)
+	if code != 1 || !strings.Contains(se.String(), "no module named nope") {
+		t.Errorf("code=%d stderr=%q", code, se.String())
+	}
+}
+
+func TestRunCatalogSamples(t *testing.T) {
+	var so, se bytes.Buffer
+	code := run([]string{"catalog", "--provider", "dir:../../samples/go"}, &so, &se)
+	lines := strings.Split(strings.TrimSpace(so.String()), "\n")
+	if code != 0 || len(lines) != 4 {
+		t.Errorf("code=%d out=%q err=%q", code, so.String(), se.String())
+	}
+}
+
+func TestRunCatalogNoProvider(t *testing.T) {
+	var so, se bytes.Buffer
+	code := run([]string{"catalog"}, &so, &se)
+	if code != 2 || !strings.Contains(se.String(), "no provider: pass --provider or run artifactory init") {
+		t.Errorf("code=%d err=%q", code, se.String())
+	}
+}
+
+func TestRunShowSample(t *testing.T) {
+	var so, se bytes.Buffer
+	code := run([]string{"show", "kvstore", "--provider", "dir:../../samples/go"}, &so, &se)
+	if code != 0 || !strings.Contains(so.String(), "kvstore") || !strings.Contains(so.String(), "v0.1.0") {
+		t.Errorf("code=%d out=%q err=%q", code, so.String(), se.String())
+	}
+}
