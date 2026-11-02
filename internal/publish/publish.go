@@ -59,7 +59,8 @@ func Publish(ctx context.Context, dir string, p provider.Provider, opts Options,
 		return Result{}, &CheckError{fmt.Sprintf("name %q is not a plain repo name (letters, digits, . _ -; not ending in .git)", d.Name)}
 	}
 	tag := "v" + d.Version
-	tags, err := p.Tags(ctx, d.Name)
+	// Read tags past any cache so the check is never stale.
+	tags, err := provider.Uncached(p).Tags(ctx, d.Name)
 	if err != nil && !errors.Is(err, provider.ErrNotFound) {
 		return Result{}, err
 	}
@@ -124,6 +125,7 @@ func Publish(ctx context.Context, dir string, p provider.Provider, opts Options,
 	if _, err := runGit(ctx, top, "push", url, commit+":refs/tags/"+tag); err != nil {
 		return Result{}, fmt.Errorf("push tag %s: %w", tag, err)
 	}
+	provider.Invalidate(p, d.Name)
 	return res, nil
 }
 

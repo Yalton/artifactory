@@ -109,3 +109,24 @@ func (c *cached) ReadFile(ctx context.Context, repo, ref, path string) ([]byte, 
 	c.put(f, b)
 	return b, nil
 }
+
+// Uncached returns the provider a cache wraps, or p itself when p is not a
+// cache. Callers that must not act on stale data (publish's tag check) use it.
+func Uncached(p Provider) Provider {
+	if c, ok := p.(*cached); ok {
+		return c.Provider
+	}
+	return p
+}
+
+// Invalidate drops the cached repo list and repo's cached tag list when p is
+// a cache, so the next catalog read sees a module just published. It does
+// nothing for other providers.
+func Invalidate(p Provider, repo string) {
+	c, ok := p.(*cached)
+	if !ok {
+		return
+	}
+	os.Remove(c.file("list"))
+	os.Remove(c.file("tags", repo))
+}

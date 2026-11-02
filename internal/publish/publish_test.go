@@ -3,12 +3,15 @@ package publish
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"repo.billbert.co/artifactory/artifactory/internal/catalog"
 	"repo.billbert.co/artifactory/artifactory/internal/provider"
 )
 
@@ -206,4 +209,51 @@ func TestPublishNonFastForwardFails(t *testing.T) {
 		t.Fatal("want rejection")
 	}
 	_ = root
+}
+
+func TestPublishIgnoresStaleTagCache(t *testing.T) {
+	ctx := context.Background()
+	_, mod, p, root := setup(t, false, "touch ran")
+	cached := provider.Cached(p, t.TempDir(), time.Hour)
+	if _, err := p.Ensure(ctx, "mymod"); err != nil {
+		t.Fatal(err)
+	}
+	// Cache the empty tag list, then publish behind the cache's back.
+	if tags, err := cached.Tags(ctx, "mymod"); err != nil || len(tags) != 0 {
+		t.Fatalf("tags = %v, %v", tags, err)
+	}
+	if _, err, _ := pub(t, mod, p, true); err != nil {
+		t.Fatal(err)
+	}
+	bare := filepath.Join(root, "mymod.git")
+	mainBefore := git(t, bare, "rev-parse", "main")
+	os.Remove(filepath.Join(mod, "ran"))
+	_, err, _ := pub(t, mod, cached, false)
+	var ce *CheckError
+	if !errors.As(err, &ce) || !strings.Contains(err.Error(), "already published") {
+		t.Fatalf("err = %v, want already-published CheckError", err)
+	}
+	if _, serr := os.Stat(filepath.Join(mod, "ran")); serr == nil {
+		t.Error("test command ran")
+	}
+	if git(t, bare, "rev-parse", "main") != mainBefore {
+		t.Error("main moved")
+	}
+}
+
+func TestPublishInvalidatesCatalogCache(t *testing.T) {
+	ctx := context.Background()
+	_, mod, p, _ := setup(t, false, "true")
+	cached := provider.Cached(p, t.TempDir(), time.Hour)
+	mods, _, err := catalog.Load(ctx, cached)
+	if err != nil || len(mods) != 0 {
+		t.Fatalf("before: %v, %v", mods, err)
+	}
+	if _, err, _ := pub(t, mod, cached, false); err != nil {
+		t.Fatal(err)
+	}
+	mods, _, err = catalog.Load(ctx, cached)
+	if err != nil || len(mods) != 1 || mods[0].Name != "mymod" {
+		t.Fatalf("after: %v, %v", mods, err)
+	}
 }
