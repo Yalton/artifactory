@@ -237,7 +237,7 @@
     2. Tag `v<version>` must not exist in `p.Tags(name)`. Otherwise the error is `v<version> already published; bump version in module.yaml`.
     3. Run `sh -c <test>` in `dir`, which must exit 0.
     4. `p.Ensure(name)` returns the push URL.
-    5. If `dir` is the top of a git work tree, push `HEAD:refs/heads/main`. Otherwise run `git subtree split --prefix=<rel> HEAD` from the repo top and push that commit to `refs/heads/main`. Uncommitted changes under `dir` are an error before step 3: `commit your changes first`.
+    5. If `dir` is the top of a git work tree, push `HEAD:refs/heads/main`. Otherwise build the commit with git plumbing from the repo top: `git ls-remote <url> refs/heads/main` and, if the remote has a `main`, `git fetch` it; then `git commit-tree <tree of HEAD:<rel>>` with the fetched `main` as parent (none when the remote has no `main`). Push that commit to `refs/heads/main` without force, then the tag. It fast-forwards by construction, and the remote keeps one commit per publish, not the folder's history. (`git subtree` is not used: it is not installed on this host or in the sandboxes.) Uncommitted changes under `dir` are an error before step 3: `commit your changes first`.
     6. Push the tag `v<version>` on the pushed commit.
   - `artifactory validate DIR --provider SPEC` additionally reports `v<version> already published` when the tag exists. Without `--provider`, validate stays offline. This is how the spec's "version tag is free" check is placed.
   - `artifactory publish [DIR] [--provider SPEC] [--skip-tests]`. `--skip-tests` exists only for modules whose `test` needs a sibling demo project. It prints a warning and is recorded in the result as `"tests_skipped": true`.
