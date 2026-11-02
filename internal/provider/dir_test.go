@@ -111,3 +111,16 @@ func TestOpenErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestEnsureRejectsBadName(t *testing.T) {
+	root := t.TempDir()
+	p, _ := Open("dir:" + root)
+	for _, name := range []string{"../x", "a/b", "", ".."} {
+		if _, err := p.Ensure(context.Background(), name); err == nil {
+			t.Errorf("Ensure(%q) succeeded", name)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(root), "x.git")); err == nil {
+		t.Error("repo created outside root")
+	}
+}

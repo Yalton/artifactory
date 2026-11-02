@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"repo.billbert.co/artifactory/artifactory/internal/descriptor"
+	"repo.billbert.co/artifactory/artifactory/internal/provider"
 	"repo.billbert.co/artifactory/artifactory/internal/validate"
 )
 
@@ -17,9 +20,31 @@ type moduleReport struct {
 
 // runValidate checks each DIR (default ".") and exits 1 if any has problems.
 func runValidate(out *output, args []string) int {
-	for _, a := range args {
-		if strings.HasPrefix(a, "-") {
+	var spec string
+	var dirs []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--provider" || a == "-provider":
+			if i+1 >= len(args) {
+				return out.fail(exitUsage, "validate: --provider needs a value")
+			}
+			i++
+			spec = args[i]
+		case strings.HasPrefix(a, "--provider="):
+			spec = strings.TrimPrefix(a, "--provider=")
+		case strings.HasPrefix(a, "-"):
 			return out.fail(exitUsage, "validate: unknown flag "+a)
+		default:
+			dirs = append(dirs, a)
+		}
+	}
+	args = dirs
+	var prov provider.Provider
+	if spec != "" {
+		var err error
+		if prov, err = provider.Open(spec); err != nil {
+			return out.fail(exitUsage, err.Error())
 		}
 	}
 	if len(args) == 0 {
@@ -30,6 +55,17 @@ func runValidate(out *output, args []string) int {
 	bad := false
 	for _, dir := range args {
 		d, problems := validate.Module(dir)
+		if prov != nil && len(problems) == 0 {
+			tags, err := prov.Tags(context.Background(), d.Name)
+			if err != nil && !errors.Is(err, provider.ErrNotFound) {
+				return out.fail(exitUsage, err.Error())
+			}
+			for _, t := range tags {
+				if t == "v"+d.Version {
+					problems = append(problems, "v"+d.Version+" already published")
+				}
+			}
+		}
 		r := moduleReport{Dir: dir, Problems: problems}
 		if r.Problems == nil {
 			r.Problems = []string{}

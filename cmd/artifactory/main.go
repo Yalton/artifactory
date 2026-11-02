@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-var commands = []string{"validate", "catalog", "show", "search", "init", "add", "index", "install"}
+var commands = []string{"validate", "catalog", "show", "search", "init", "add", "index", "install", "publish"}
 
 // handlers maps implemented commands to their entry points.
 var handlers = map[string]func(*output, []string) int{
@@ -20,6 +20,7 @@ var handlers = map[string]func(*output, []string) int{
 	"add":      runAdd,
 	"index":    runIndex,
 	"install":  runInstall,
+	"publish":  runPublish,
 }
 
 func main() {

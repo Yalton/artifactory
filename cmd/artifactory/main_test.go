@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -130,5 +131,66 @@ func TestExtractRefreshFlag(t *testing.T) {
 	got, found := extractFlag([]string{"catalog", "--refresh", "--provider", "x", "--", "--refresh"}, "refresh")
 	if !found || strings.Join(got, " ") != "catalog --provider x -- --refresh" {
 		t.Errorf("got %v, %v", got, found)
+	}
+}
+
+func TestValidateProviderReportsPublishedTag(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "kvstore.git")
+	for _, a := range [][]string{{"init", "--bare", "-q", repo}} {
+		if b, err := exec.Command("git", a...).CombinedOutput(); err != nil {
+			t.Fatal(err, string(b))
+		}
+	}
+	// A bare repo with a v0.1.0 tag: build it from a scratch work tree.
+	work := t.TempDir()
+	env := append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+	for _, a := range [][]string{{"init", "-q"}, {"commit", "-q", "--allow-empty", "-m", "x"}, {"tag", "v0.1.0"}, {"push", "-q", repo, "--tags"}} {
+		c := exec.Command("git", a...)
+		c.Dir, c.Env = work, env
+		if b, err := c.CombinedOutput(); err != nil {
+			t.Fatal(err, string(b))
+		}
+	}
+	good := mod(t, validYAML)
+	var out, errb bytes.Buffer
+	if code := run([]string{"validate", good, "--provider", "dir:" + root}, &out, &errb); code != 1 || !strings.Contains(errb.String()+out.String(), "v0.1.0 already published") {
+		t.Errorf("code=%d out=%q err=%q", code, out.String(), errb.String())
+	}
+	out.Reset()
+	if code := run([]string{"validate", good}, &out, &errb); code != 0 {
+		t.Errorf("offline validate code=%d", code)
+	}
+}
+
+func TestPublishCommandJSON(t *testing.T) {
+	dir := mod(t, strings.Replace(validYAML, "test: go test ./...", `test: "false"`, 1))
+	env := append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+	for _, a := range [][]string{{"init", "-q"}, {"add", "-A"}, {"commit", "-qm", "x"}} {
+		c := exec.Command("git", a...)
+		c.Dir, c.Env = dir, env
+		if b, err := c.CombinedOutput(); err != nil {
+			t.Fatal(err, string(b))
+		}
+	}
+	t.Setenv("GIT_AUTHOR_NAME", "t")
+	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
+	root := t.TempDir()
+	var out, errb bytes.Buffer
+	if code := run([]string{"publish", dir, "--provider", "dir:" + root}, &out, &errb); code != 1 {
+		t.Fatalf("failing test: code=%d err=%q", code, errb.String())
+	}
+	out.Reset()
+	errb.Reset()
+	code := run([]string{"publish", dir, "--provider", "dir:" + root, "--skip-tests", "--json"}, &out, &errb)
+	var got map[string]any
+	if code != 0 || json.Unmarshal(out.Bytes(), &got) != nil || got["tests_skipped"] != true || got["tag"] != "v0.1.0" {
+		t.Fatalf("code=%d out=%q err=%q", code, out.String(), errb.String())
+	}
+	if code := run([]string{"publish", dir, "--provider", "dir:" + root}, &out, &errb); code != 1 {
+		t.Errorf("republish code=%d", code)
+	}
+	if code := run([]string{"publish", dir}, &out, &errb); code != 2 {
+		t.Errorf("no provider code=%d", code)
 	}
 }

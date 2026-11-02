@@ -3,6 +3,7 @@ package provider
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -145,10 +146,14 @@ func (d *dirProvider) ReadFile(ctx context.Context, repo, ref, path string) ([]b
 // Ensure creates <repo>.git as a bare repo when the repo is missing and
 // returns the repo's absolute path.
 func (d *dirProvider) Ensure(ctx context.Context, repo string) (string, error) {
-	if p, err := d.path(repo); err == nil {
+	p, err := d.path(repo)
+	if err == nil {
 		return p, nil
 	}
-	p := filepath.Join(d.root, repo+".git")
+	if !errors.Is(err, ErrNotFound) {
+		return "", err
+	}
+	p = filepath.Join(d.root, repo+".git")
 	if _, err := runGit(ctx, d.root, "init", "--bare", "-q", p); err != nil {
 		return "", err
 	}
