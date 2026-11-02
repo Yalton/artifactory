@@ -163,6 +163,25 @@ func TestValidateProviderReportsPublishedTag(t *testing.T) {
 	if code := run([]string{"validate", good}, &out, &errb); code != 0 {
 		t.Errorf("offline validate code=%d", code)
 	}
+	if want := good + ": ok\n" + good + ": tag check skipped: no provider\n"; out.String() != want {
+		t.Errorf("offline validate out=%q, want %q", out.String(), want)
+	}
+	out.Reset()
+	run([]string{"validate", "--json", good}, &out, &errb)
+	var v struct {
+		Modules []struct {
+			TagCheck string `json:"tag_check"`
+		} `json:"modules"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &v); err != nil || len(v.Modules) != 1 || v.Modules[0].TagCheck != "skipped" {
+		t.Errorf("json=%q err=%v", out.String(), err)
+	}
+	// The provider in DIR/artifactory.yaml is used when no flag is given.
+	os.WriteFile(filepath.Join(good, "artifactory.yaml"), []byte("ecosystem: go\nprovider: dir:"+root+"\n"), 0o644)
+	out.Reset()
+	if code := run([]string{"validate", good}, &out, &errb); code != 1 || !strings.Contains(out.String(), "v0.1.0 already published") {
+		t.Errorf("artifactory.yaml provider: code=%d out=%q", code, out.String())
+	}
 }
 
 func TestPublishCommandJSON(t *testing.T) {

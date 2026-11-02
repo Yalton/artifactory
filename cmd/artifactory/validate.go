@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"repo.billbert.co/artifactory/artifactory/internal/descriptor"
+	"repo.billbert.co/artifactory/artifactory/internal/project"
 	"repo.billbert.co/artifactory/artifactory/internal/provider"
 	"repo.billbert.co/artifactory/artifactory/internal/validate"
 )
@@ -16,6 +18,10 @@ type moduleReport struct {
 	Dir        string                 `json:"dir"`
 	Descriptor *descriptor.Descriptor `json:"descriptor"`
 	Problems   []string               `json:"problems"`
+	// TagCheck is "checked" when a provider was asked whether the version
+	// tag is free, "skipped" when no provider was found, and absent when
+	// the module had problems before that check.
+	TagCheck string `json:"tag_check,omitempty"`
 }
 
 // runValidate checks each DIR (default ".") and exits 1 if any has problems.
@@ -40,10 +46,10 @@ func runValidate(out *output, args []string) int {
 		}
 	}
 	args = dirs
-	var prov provider.Provider
+	var flagProv provider.Provider
 	if spec != "" {
 		var err error
-		if prov, err = provider.Open(spec); err != nil {
+		if flagProv, err = provider.Open(spec); err != nil {
 			return out.fail(exitUsage, err.Error())
 		}
 	}
@@ -55,24 +61,41 @@ func runValidate(out *output, args []string) int {
 	bad := false
 	for _, dir := range args {
 		d, problems := validate.Module(dir)
-		if prov != nil && len(problems) == 0 {
-			tags, err := prov.Tags(context.Background(), d.Name)
-			if err != nil && !errors.Is(err, provider.ErrNotFound) {
-				return out.fail(exitUsage, err.Error())
+		r := moduleReport{Dir: dir}
+		if len(problems) == 0 {
+			// The provider is the flag's, else DIR/artifactory.yaml's. It is
+			// never cached, so the tag check is never stale.
+			prov := flagProv
+			if prov == nil {
+				var err error
+				if prov, err = dirProvider(dir); err != nil {
+					return out.fail(exitUsage, err.Error())
+				}
 			}
-			for _, t := range tags {
-				if t == "v"+d.Version {
-					problems = append(problems, "v"+d.Version+" already published")
+			r.TagCheck = "skipped"
+			if prov != nil {
+				r.TagCheck = "checked"
+				tags, err := prov.Tags(context.Background(), d.Name)
+				if err != nil && !errors.Is(err, provider.ErrNotFound) {
+					return out.fail(exitUsage, err.Error())
+				}
+				for _, t := range tags {
+					if t == "v"+d.Version {
+						problems = append(problems, "v"+d.Version+" already published")
+					}
 				}
 			}
 		}
-		r := moduleReport{Dir: dir, Problems: problems}
+		r.Problems = problems
 		if r.Problems == nil {
 			r.Problems = []string{}
 		}
 		if len(problems) == 0 {
 			r.Descriptor = &d
 			lines = append(lines, dir+": ok")
+			if r.TagCheck == "skipped" {
+				lines = append(lines, dir+": tag check skipped: no provider")
+			}
 		} else {
 			bad = true
 			for _, p := range problems {
@@ -86,4 +109,20 @@ func runValidate(out *output, args []string) int {
 		return exitProblems
 	}
 	return exitOK
+}
+
+// dirProvider opens the provider named in DIR/artifactory.yaml, or returns
+// nil when there is no such file. Folders above DIR are not searched.
+func dirProvider(dir string) (provider.Provider, error) {
+	f, err := project.Load(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if f.Provider == "" {
+		return nil, nil
+	}
+	return provider.Open(f.ProviderSpec(dir))
 }
