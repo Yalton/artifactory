@@ -1,0 +1,16 @@
+name: config
+ecosystem: go
+version: 0.1.0
+summary: Load typed settings from env vars, an optional key=value file and struct-tag defaults.
+replaces:
+  - reading settings with os.Getenv
+  - parsing env vars and config files into a struct
+  - default values for settings
+install: go get repo.billbert.co/artifactory/config
+setup: []
+entry:
+  - config.Load
+liveness: go list -deps of the main package includes repo.billbert.co/artifactory/config
+docs: README.md
+example: example/main.go
+test: go test ./...

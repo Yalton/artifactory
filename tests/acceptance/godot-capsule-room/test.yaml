@@ -1,0 +1,14 @@
+name: godot-capsule-room
+ecosystem: godot-csharp
+fixture: ../../../fixtures/godot-blank
+prompt: prompt.md
+time_limit_s: 7200
+modules:
+  - InputRemapKit
+  - SettingsKit
+  - CursorKit
+  - DebugLogKit
+  - DevConsoleKit
+  - CrashKit
+  - TransitionKit
+  - RunSaveKit

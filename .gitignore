@@ -1,1 +1,10 @@
 .serena/
+.venv/
+__pycache__/
+# Trial outputs; only the round reports are tracked.
+/results/**
+!/results/**/
+!/results/**/REPORT.md
+# Trial trees hold nested git repos; never descend into them.
+/results/**/trial-*/
+/results/mirrors/

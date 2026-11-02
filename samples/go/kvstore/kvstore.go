@@ -1,0 +1,90 @@
+// Package kvstore is a small string key-value store kept in one JSON file.
+package kvstore
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sync"
+)
+
+// Store is safe for concurrent use.
+type Store struct {
+	mu   sync.RWMutex
+	path string
+	data map[string]string
+}
+
+// Open loads the store at path, creating the file (and parent directories) if missing.
+func Open(path string) (*Store, error) {
+	s := &Store{path: path, data: map[string]string{}}
+	b, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return nil, fmt.Errorf("kvstore: %w", err)
+		}
+		if err := s.flush(); err != nil {
+			return nil, err
+		}
+	case err != nil:
+		return nil, fmt.Errorf("kvstore: %w", err)
+	case len(b) > 0:
+		if err := json.Unmarshal(b, &s.data); err != nil {
+			return nil, fmt.Errorf("kvstore: %s: %w", path, err)
+		}
+	}
+	return s, nil
+}
+
+// Get returns the value for key and whether it exists.
+func (s *Store) Get(key string) (string, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	v, ok := s.data[key]
+	return v, ok, nil
+}
+
+// PutIfAbsent stores val under key unless key exists. It reports whether it stored.
+func (s *Store) PutIfAbsent(key, val string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.data[key]; ok {
+		return false, nil
+	}
+	s.data[key] = val
+	if err := s.flush(); err != nil {
+		delete(s.data, key)
+		return false, err
+	}
+	return true, nil
+}
+
+// Close releases the store. Every write is already on disk.
+func (s *Store) Close() error { return nil }
+
+// flush rewrites the file atomically (temp file, then rename). Caller holds the lock.
+func (s *Store) flush() error {
+	b, err := json.Marshal(s.data)
+	if err != nil {
+		return fmt.Errorf("kvstore: %w", err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".kvstore-*")
+	if err != nil {
+		return fmt.Errorf("kvstore: %w", err)
+	}
+	_, werr := tmp.Write(b)
+	cerr := tmp.Close()
+	if err := errors.Join(werr, cerr); err != nil {
+		os.Remove(tmp.Name())
+		return fmt.Errorf("kvstore: %w", err)
+	}
+	if err := os.Rename(tmp.Name(), s.path); err != nil {
+		os.Remove(tmp.Name())
+		return fmt.Errorf("kvstore: %w", err)
+	}
+	return nil
+}
