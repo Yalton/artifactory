@@ -77,12 +77,19 @@ func Parse(data []byte, folder string) (Descriptor, []string) {
 		return Descriptor{}, []string{"must be a mapping"}
 	}
 
+	// Numbers keep their source text (version: 1.0 stays "1.0", as in Python).
+	var nodes map[string]yaml.Node
+	_ = yaml.Unmarshal(data, &nodes)
+
 	var problems []string
 	strs := map[string]string{}
 	lists := map[string][]string{}
 	for _, f := range strFields {
 		v := m[f]
 		s, isScalar := scalarString(v)
+		if n, ok := nodes[f]; ok && n.Kind == yaml.ScalarNode && (n.Tag == "!!int" || n.Tag == "!!float") {
+			s, isScalar = n.Value, true
+		}
 		switch {
 		case v == nil || (isScalar && strings.TrimSpace(s) == "") && isStr(v):
 			problems = append(problems, "missing field: "+f)

@@ -96,6 +96,15 @@ func TestParseMissingInstallAndLivenessAllReported(t *testing.T) {
 	}
 }
 
+func TestParseNumericVersionText(t *testing.T) {
+	for _, v := range []string{"1", "1.0", "0.10"} {
+		d, problems := Parse([]byte(mutate(t, "version", "version: "+v)), "FooKit")
+		if len(problems) != 0 || d.Version != v {
+			t.Errorf("version %s: got %q, problems %q", v, d.Version, problems)
+		}
+	}
+}
+
 func TestParseValues(t *testing.T) {
 	d, problems := Parse([]byte(validYAML), "FooKit")
 	if len(problems) != 0 {
