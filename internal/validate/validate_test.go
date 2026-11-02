@@ -107,3 +107,23 @@ func TestValidateRealSamples(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateVersionFormat(t *testing.T) {
+	tests := []struct {
+		version string
+		want    []string
+	}{
+		{"0.1.0", nil},
+		{"1.0", []string{"version: 1.0 is not MAJOR.MINOR.PATCH (e.g. 0.1.0)"}},
+		{"v1.2.3", []string{"version: v1.2.3 is not MAJOR.MINOR.PATCH (e.g. 0.1.0)"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.version, func(t *testing.T) {
+			y := strings.Replace(goYAML, "version: 0.1.0", "version: "+tt.version, 1)
+			_, problems := Module(module(t, y, goodMod, "README.md"))
+			if strings.Join(problems, "|") != strings.Join(tt.want, "|") {
+				t.Errorf("problems = %q, want %q", problems, tt.want)
+			}
+		})
+	}
+}

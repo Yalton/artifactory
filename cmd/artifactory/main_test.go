@@ -42,6 +42,7 @@ func mod(t *testing.T, yaml string) string {
 func TestRunValidateExitCodes(t *testing.T) {
 	good := mod(t, validYAML)
 	bad := mod(t, strings.Replace(validYAML, "ecosystem: go", "ecosystem: rust", 1))
+	twoPart := mod(t, strings.Replace(validYAML, "version: 0.1.0", "version: 1.0", 1))
 	tests := []struct {
 		name string
 		args []string
@@ -50,6 +51,7 @@ func TestRunValidateExitCodes(t *testing.T) {
 		{"valid", []string{"validate", good}, 0},
 		{"invalid", []string{"validate", bad}, 1},
 		{"one bad of two", []string{"validate", good, bad}, 1},
+		{"two-part version", []string{"validate", twoPart}, 1},
 		{"unknown command", []string{"frobnicate"}, 2},
 		{"no args", nil, 2},
 		{"help", []string{"help"}, 0},

@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"repo.billbert.co/artifactory/artifactory/internal/descriptor"
 )
+
+var semver = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
 
 // Module validates the module in dir. It returns the descriptor (zero when the
 // descriptor itself is invalid) and the problems found, empty when valid.
@@ -22,6 +25,10 @@ func Module(dir string) (descriptor.Descriptor, []string) {
 		return descriptor.Descriptor{}, []string{err.Error()}
 	}
 	var problems []string
+	// The version becomes the tag v<version>, which catalogs read as semver.
+	if !semver.MatchString(d.Version) {
+		problems = append(problems, fmt.Sprintf("version: %s is not MAJOR.MINOR.PATCH (e.g. 0.1.0)", d.Version))
+	}
 	if !isFile(filepath.Join(dir, d.Docs)) {
 		problems = append(problems, fmt.Sprintf("docs: %s not found", d.Docs))
 	}
