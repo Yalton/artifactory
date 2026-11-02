@@ -36,9 +36,30 @@ func CachedRefresh(p Provider, dir string, ttl time.Duration, refresh bool) Prov
 	return &cached{Provider: p, dir: dir, ttl: ttl, refresh: refresh, now: time.Now}
 }
 
+// authState is implemented by providers whose answers depend on whether a
+// token is present. It reports presence only, never the token.
+type authState interface {
+	authed() bool
+}
+
+// file returns the cache file for op and args under the current auth state.
 func (c *cached) file(op string, args ...string) string {
+	authed := false
+	if a, ok := c.Provider.(authState); ok {
+		authed = a.authed()
+	}
+	return c.fileFor(authed, op, args...)
+}
+
+// fileFor keys the cache file by spec, auth state, op and args, so an
+// unauthenticated answer is never served to an authenticated run.
+func (c *cached) fileFor(authed bool, op string, args ...string) string {
+	auth := "anon"
+	if authed {
+		auth = "auth"
+	}
 	h := sha256.New()
-	for _, s := range append([]string{c.Spec(), op}, args...) {
+	for _, s := range append([]string{c.Spec(), auth, op}, args...) {
 		h.Write([]byte(s))
 		h.Write([]byte{0})
 	}
@@ -60,14 +81,21 @@ func (c *cached) get(file string) ([]byte, bool) {
 	return e.Data, true
 }
 
+// put writes data to file atomically: a private directory, a unique temp
+// file readable only by the user, then a rename.
 func (c *cached) put(file string, data []byte) {
 	raw, err := json.Marshal(cacheEntry{At: c.now(), Data: data})
-	if err != nil || os.MkdirAll(c.dir, 0o755) != nil {
+	if err != nil || os.MkdirAll(c.dir, 0o700) != nil || os.Chmod(c.dir, 0o700) != nil {
 		return
 	}
-	tmp := file + ".tmp"
-	if os.WriteFile(tmp, raw, 0o644) == nil {
-		os.Rename(tmp, file)
+	tmp, err := os.CreateTemp(c.dir, ".tmp-*")
+	if err != nil {
+		return
+	}
+	_, werr := tmp.Write(raw)
+	cerr := tmp.Close()
+	if werr != nil || cerr != nil || os.Rename(tmp.Name(), file) != nil {
+		os.Remove(tmp.Name())
 	}
 }
 
@@ -127,6 +155,8 @@ func Invalidate(p Provider, repo string) {
 	if !ok {
 		return
 	}
-	os.Remove(c.file("list"))
-	os.Remove(c.file("tags", repo))
+	for _, authed := range []bool{false, true} {
+		os.Remove(c.fileFor(authed, "list"))
+		os.Remove(c.fileFor(authed, "tags", repo))
+	}
 }

@@ -38,6 +38,9 @@ func openForgejo(rest string) (*forgejoProvider, error) {
 
 func (f *forgejoProvider) Spec() string { return "forgejo:" + f.host + "/" + f.org }
 
+// authed reports whether a token is available, for the cache key.
+func (f *forgejoProvider) authed() bool { return forgejoToken() != "" }
+
 // forgejoToken returns FORGEJO_TOKEN, else the default tea login's token, else "".
 func forgejoToken() string {
 	if t := os.Getenv("FORGEJO_TOKEN"); t != "" {
