@@ -21,22 +21,23 @@ Two acceptance tests, 5 trials per round, pass bar 4 of 5. Time limit per trial:
 | 3 | 5/5 | 1/5 | httpserver v0.2.0 (`Run` handles signals); consumer notes per ecosystem shown in MODULES.md; stop rule |
 | 4 | 5/5 | 5/5 | MoveCheck self-check; Godot pitfalls list; DevConsoleKit sets up its own input action; `Setup:` lines in the index |
 | 5 | (5/5 stands) | 1/5 | Checker requires a camera that sees the player (`player_visible`) |
+| 6 | (5/5 stands) | 5/5 by checker, 3/5 by screenshot | `player_visible` counts first person, needs a drawn mesh, tests a 16:9 frustum; MoveCheck reports the reason |
 
-Per-round analyses: `results/godot-capsule-room/baseline/REPORT.md`, `results/round-{1..5}/REPORT.md`.
+Per-round analyses: `results/godot-capsule-room/baseline/REPORT.md`, `results/round-{1..6}/REPORT.md`.
 
 ## Verdict
 
 - **Go: met.** The bar was met in rounds 3 and 4 (5/5 both times). Every failure in rounds 1–2 traced to a module or its docs, and each was fixed in the module. This is the standard working as designed.
-- **Godot: not met under the final checker.** Round 4 passed 5/5, but a screenshot audit showed all five games as a plain grey window: none of them added a camera. The checker never tested whether the game could be seen. Once that check was added, round 5 passed 1/5. All four failures hit the 2 h limit. Two of them had games that passed every check when time ran out (t4, t5). One had a model geometry bug that hid the player (t2), and one had a player that did not move (t3).
+- **Godot: not met by eye.** Round 4 passed 5/5, but a screenshot audit showed all five games as a plain grey window: none of them added a camera. Once a camera check was added, round 5 passed 1/5, with four trials at the 2 h limit. Round 6 reworked that check (first person, drawn mesh, 16:9) and passed 5/5 by the checker, all within 28–87 min. The screenshots show 3/5: t2's player is hidden by a wall that is drawn but has no physics body, which the checker's ray cannot see, and t3 has no room at all, which nothing checks. Bar is 4/5.
 - **No kit-caused Godot failures after round 3.** In round 3, t2 failed on a skipped DevConsoleKit setup step, which round 4 removed. From round 4 onward, no Godot failure traced to a kit. Every trial installed all 8 kits as submodules, left them unmodified, and printed all 8 liveness markers. The remaining failures are the model's own game code: walls, movement, camera.
 
-So the standard is not marked 1.0. In the plan's terms, both tests met the bar in the same round (round 4), but that round's Godot "pass" did not mean playable, so I ruled that it does not count.
+So the standard is not marked 1.0. In the plan's terms, both tests met the bar by the checker in rounds 4 and 6, but neither round's Godot "pass" met the bar by screenshot, so I ruled that they do not count.
 
 ## What the gains are made of (caveats)
 
 1. **Baseline confound.** The baseline listed the full 34-kit catalog. Rounds 1+ list only the 8 foundation kits. The baseline's 0/5 is partly scope blowup (trials installed 33–34 kits), so baseline-to-round-1 is not a clean measure of the standard.
 2. **Engine tutoring is not stitchability.** The Godot jump from 1/5 to 5/5 in round 4 came mostly from `standard/consumer/godot-csharp.md`: the MoveCheck self-check, a pitfalls list (key codes, `_PhysicsProcess(double)`, velocity in the XZ plane, collider placement) and project-file rules. These teach Godot itself. They belong with the standard as consumer notes, but they say nothing about module design.
-3. **Checker gaps found late.** The camera gap was found in round 4 by looking at screenshots. Round 5 found two more: a frustum test passes even when no mesh is drawn (t5 shows no capsule), and a headless viewport is 64×64, which skews the test for wide cameras. Each is filed as a bead. The camera check also assumes a third-person view: a first-person camera at the player's head fails it, though that is a playable reading of the prompt, and the prompt never mentions a camera.
+3. **Checker gaps found late.** The camera gap was found in round 4 by looking at screenshots. Round 5 found two more: a frustum test passes even when no mesh is drawn, and a headless viewport is 64×64, which skews the test for wide cameras. Both were fixed for round 6, along with accepting a first-person camera. Round 6 found two more, filed as beads: occlusion only counts physics bodies (`Artifactory-2pd`), and nothing checks that a room exists (`Artifactory-3y3`). Each round of checker fixes has exposed the next gap; only a person looking at a screenshot has caught them.
 4. **One model, small samples.** Every result is Ornith 35B, at 5 trials per round. A 5/5 versus 4/5 difference is within noise.
 5. **Web access was open.** The sandbox did not block outbound traffic. Trial transcripts hold 51 `webfetch` calls across all rounds, mostly 404s from GitHub and godotengine.org; at least one fetched Godot source. The model's outside input was light but uncontrolled.
 
@@ -47,7 +48,7 @@ So the standard is not marked 1.0. In the plan's terms, both tests met the bar i
 | 1 Descriptor | yes | `artifactory validate` on all kits; the liveness format is validated |
 | 2 Docs travel with code | yes | Go trials found READMEs via `go list -m -f '{{.Dir}}'`; Godot via submodules |
 | 3 Never edit modules | yes | `modules_unmodified` passed in every trial from round 3 on |
-| 4 Every module live | yes | liveness markers; all present in every round 4–5 Godot trial |
+| 4 Every module live | yes | liveness markers; all present in every round 4–6 Godot trial |
 | 5 Worked example | partly | Trials that read the README Wiring section wired modules correctly. For Go, completing the Wiring text alone did not fix round 2; the round-3 API change did |
 | 6 Minimise setup | yes | DevConsoleKit's input-action step was skipped in round 3; making it automatic removed the failure |
 | 7 Index lists setup | weakly | Added in round 4; no setup-step failures after |
@@ -66,7 +67,7 @@ Unproven:
 
 - **Kit catalog `Log.cs` retargeting.** The GodotKits catalog README tells consumers to retarget logging by editing a kit's `Log.cs`, which rule 3 forbids. This needs a public logging hook in the kits. It is not resolved.
 - **26 kits not converted.** Only the 8 foundation kits have `stitchability` branches.
-- **Kit branches not merged.** All 8 kit `stitchability` branches are pushed but not merged to `main`. Merging is the operator's call.
+- **Kits moved.** All 34 kits and the GodotKits catalog now live in the Forgejo org `artifactory`, and the 8 `stitchability` branches are merged to `main`.
 - **InputRemapKit.** Its README mentions an optional `InputDeviceTracker` autoload that its `setup:` does not list.
 
 ## For sub-project 2 (the artifactory itself)
@@ -78,8 +79,8 @@ Unproven:
 
 ## Best Godot trial to play
 
-`results/godot-capsule-room/round-5/trial-1/project`. It passed every check, including the camera check, within the time limit. Its screenshot (`results/round-5/trial-1.png`) shows the capsule. To play it:
+`results/godot-capsule-room/round-6/trial-1/project`. It passed every check in 58 min, its screenshot (`results/round-6/trial-1.png`) shows the capsule in a room, and it is the only round-6 trial whose walls are physics bodies, so they stop the player. To play it:
 
 ```
-cd results/godot-capsule-room/round-5/trial-1/project && dotnet build && godot --path .
+cd results/godot-capsule-room/round-6/trial-1/project && dotnet build && godot --path .
 ```
