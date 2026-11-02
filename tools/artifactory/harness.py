@@ -63,6 +63,15 @@ TRIAL_NAME = "Artifactory Trial"
 TRIAL_EMAIL = "trial@artifactory.invalid"
 CHECKER_TIMEOUT_S = 3600
 PASS_BAR = 4
+# A dropped model connection is the server's fault, not the model's: resume the
+# session up to MAX_RESUMES times, pausing first so the server can recover.
+MAX_RESUMES = 3
+RESUME_PAUSE_S = 30
+RESUME_PROMPT = "The connection to the model dropped. Continue the task from where you left off."
+# opencode error text that means the transport failed, not the agent.
+DROP_PATTERNS = ("Transport:", "ECONNRESET", "socket connection was closed",
+                 "Standalone server exited before reporting readiness")
+INFRA_PREFIX = "infrastructure: "
 
 GO_ENV_KEYS = ("GOPROXY", "GONOSUMDB", "GOFLAGS", "GOMODCACHE", "GOPATH", "GOTOOLCHAIN", "GOWORK")
 
@@ -81,12 +90,17 @@ class RoundResult:
     def met_bar(self) -> bool:
         return self.passes >= PASS_BAR
 
+    @property
+    def infrastructure_failures(self) -> int:
+        return sum((r.reason or "").startswith(INFRA_PREFIX) for r in self.results)
+
     def to_json(self) -> str:
         return json.dumps({
             "test": self.test,
             "round": self.round,
             "passes": self.passes,
             "met_bar": self.met_bar,
+            "infrastructure_failures": self.infrastructure_failures,
             "trials": [json.loads(r.to_json()) for r in self.results],
         }, indent=2)
 
@@ -227,7 +241,8 @@ def agent_command(trial: Trial, argv: list[str]) -> list[str]:
     return sandbox_command(trial.project, trial.home, trial.ro_binds, argv, trial.env)
 
 
-def _run_sandboxed(cmd: list[str], stdout: Path, stderr: Path | None, timeout: float) -> bool:
+def _run_sandboxed(cmd: list[str], stdout: Path, stderr: Path | None, timeout: float,
+                   append: bool = False) -> bool:
     """Run a sandbox; True if it finished, False if killed at the timeout.
 
     bwrap runs in its own session and process group; killing the group kills
@@ -239,9 +254,9 @@ def _run_sandboxed(cmd: list[str], stdout: Path, stderr: Path | None, timeout: f
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE if stderr else subprocess.STDOUT,
                             stdin=subprocess.DEVNULL, start_new_session=True)
-    pumps = [threading.Thread(target=_pump, args=(proc.stdout, stdout), daemon=True)]
+    pumps = [threading.Thread(target=_pump, args=(proc.stdout, stdout, append), daemon=True)]
     if stderr:
-        pumps.append(threading.Thread(target=_pump, args=(proc.stderr, stderr), daemon=True))
+        pumps.append(threading.Thread(target=_pump, args=(proc.stderr, stderr, append), daemon=True))
     for t in pumps:
         t.start()
     try:
@@ -260,8 +275,8 @@ def _run_sandboxed(cmd: list[str], stdout: Path, stderr: Path | None, timeout: f
     return finished
 
 
-def _pump(src, dest: Path) -> None:
-    with src, open(dest, "wb") as out:
+def _pump(src, dest: Path, append: bool = False) -> None:
+    with src, open(dest, "ab" if append else "wb") as out:
         for chunk in iter(lambda: src.read1(65536), b""):
             out.write(chunk)
             out.flush()
@@ -325,14 +340,71 @@ def run_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors: Pat
     """Set up the trial, run the agent sandboxed until done or time_limit_s, then check it sandboxed."""
     trial = prepare_trial(test, index_md, trial_dir, mirrors, proxy)
     argv = opencode_argv if opencode_argv is not None else opencode_command(test.prompt)
-    finished = _run_sandboxed(agent_command(trial, argv), trial.dir / "transcript.jsonl",
-                              trial.dir / "opencode.log", test.time_limit_s)
+    transcript, log = trial.dir / "transcript.jsonl", trial.dir / "opencode.log"
+    deadline = time.monotonic() + test.time_limit_s
+    finished = _run_sandboxed(agent_command(trial, argv), transcript, log, test.time_limit_s)
+    drop = _model_drop(transcript, 0, log, 0) if finished else None
+    resumes = 0
+    while drop and resumes < MAX_RESUMES and deadline - time.monotonic() > RESUME_PAUSE_S + 60:
+        resumes += 1
+        time.sleep(RESUME_PAUSE_S)
+        at, log_at = transcript.stat().st_size, log.stat().st_size
+        session, _ = drop
+        finished = _run_sandboxed(agent_command(trial, resume_command(argv, session)), transcript, log,
+                                  max(1.0, deadline - time.monotonic()), append=True)
+        drop = _model_drop(transcript, at, log, log_at) if finished else None
     test_dir = Path(test_dir) if test_dir is not None else REPO / "tests" / "acceptance" / test.name
     result = run_checker(trial, test, test_dir, branch, baseline)
-    if not finished:
+    result.resumes = resumes
+    if drop:
+        result.reason = f"{INFRA_PREFIX}model connection dropped after {resumes} resumes: {drop[1]}"
+    elif not finished:
         result.reason = "timeout"
     (trial.dir / "checker.json").write_text(result.to_json())
     return result
+
+
+def resume_command(argv: list[str], session: str | None) -> list[str]:
+    """The agent command again, continuing `session` with RESUME_PROMPT in place of the prompt.
+
+    With no session (the agent never started one), the original command runs again.
+    """
+    if session is None:
+        return argv
+    return [*argv[:-1], "--session", session, RESUME_PROMPT]
+
+
+def _model_drop(transcript: Path, at: int, log: Path, log_at: int) -> tuple[str | None, str] | None:
+    """(session id, message) if this attempt's run ended on a dropped model connection, else None.
+
+    Only output written since byte offsets `at` and `log_at` counts. The run counts as dropped
+    when its last transcript event is a transport error, or when it wrote no events and its
+    log shows the standalone server failing to start.
+    """
+    events = []
+    if transcript.exists():
+        with open(transcript, "rb") as f:
+            f.seek(at)
+            for line in f.read().decode(errors="replace").splitlines():
+                try:
+                    events.append(json.loads(line))
+                except ValueError:
+                    continue
+    if events:
+        last = events[-1]
+        message = str((last.get("error") or {}).get("message", "")) if last.get("type") == "error" else ""
+        if any(p in message for p in DROP_PATTERNS):
+            session = next((e["sessionID"] for e in reversed(events) if e.get("sessionID")), None)
+            return session, message.splitlines()[0][:200]
+        return None
+    if log.exists():
+        with open(log, "rb") as f:
+            f.seek(log_at)
+            text = f.read().decode(errors="replace")
+        hit = next((p for p in DROP_PATTERNS if p in text), None)
+        if hit:
+            return None, hit
+    return None
 
 
 # --- rounds ----------------------------------------------------------------

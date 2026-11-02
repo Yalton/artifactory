@@ -19,6 +19,8 @@ class TrialResult:
     checks: list[CheckResult] = field(default_factory=list)
     # Set by the harness (e.g. "timeout"), never by a checker.
     reason: str | None = None
+    # Times the harness resumed the agent after a dropped model connection.
+    resumes: int = 0
 
     @property
     def passed(self) -> bool:
@@ -31,6 +33,7 @@ class TrialResult:
                 "trial": self.trial,
                 "passed": self.passed,
                 "reason": self.reason,
+                "resumes": self.resumes,
                 "checks": [asdict(c) for c in self.checks],
             },
             indent=2,

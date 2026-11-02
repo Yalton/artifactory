@@ -191,3 +191,60 @@ def test_every_kit_url_form_resolves_to_mirrors(tmp_path):
                              env={"GIT_CONFIG_GLOBAL": str(cfg), "PATH": "/usr/bin:/bin"},
                              capture_output=True, text=True, cwd=tmp_path).stdout.strip()
         assert out == f"file://{tmp_path / 'mirrors'}/PoolKit.git"
+
+
+DROP_EVENT = ('{"type":"error","sessionID":"ses_1","error":{"type":"unknown","message":'
+              '"Transport: ECONNRESET: The socket connection was closed unexpectedly."}}')
+
+
+def test_resume_command_continues_the_session():
+    argv = harness.opencode_command("build it")
+    resumed = harness.resume_command(argv, "ses_1")
+    assert resumed[:-3] == argv[:-1]
+    assert resumed[-3:] == ["--session", "ses_1", harness.RESUME_PROMPT]
+    assert harness.resume_command(argv, None) == argv
+
+
+def test_model_drop_reads_only_this_attempt(tmp_path):
+    transcript, log = tmp_path / "transcript.jsonl", tmp_path / "opencode.log"
+    transcript.write_text('{"type":"step_start","sessionID":"ses_1"}\n' + DROP_EVENT + "\n")
+    log.write_text("")
+    assert harness._model_drop(transcript, 0, log, 0) == (
+        "ses_1", "Transport: ECONNRESET: The socket connection was closed unexpectedly.")
+    at = transcript.stat().st_size
+    with open(transcript, "a") as f:
+        f.write('{"type":"text","sessionID":"ses_1"}\n')
+    assert harness._model_drop(transcript, at, log, 0) is None
+    # A run that never started a session: only the standalone server's failure shows, in the log.
+    log.write_text("Couldn't get any nameserver address\nError: Standalone server exited before reporting readiness\n")
+    assert harness._model_drop(transcript, transcript.stat().st_size, log, 0) == (
+        None, "Standalone server exited before reporting readiness")
+
+
+def test_dropped_connection_is_resumed(tmp_path, proxy, monkeypatch):
+    monkeypatch.setattr(harness, "RESUME_PAUSE_S", 0)
+    trial_dir = tmp_path / "trial-1"
+    script = (f'if [ "$1" = --session ]; then echo \'{{"type":"text","sessionID":"\'$2\'"}}\'; touch "resumed-$2"; '
+              f"else echo '{{\"type\":\"step_start\",\"sessionID\":\"ses_1\"}}'; echo '{DROP_EVENT}'; fi")
+    result = run_trial(GO_TEST, "# index", trial_dir, None, proxy,
+                       opencode_argv=[*fake_agent(script), "agent", "the prompt"], test_dir=GO_TEST_DIR)
+    assert result.resumes == 1
+    assert result.reason is None
+    assert (trial_dir / "project" / "resumed-ses_1").exists()
+    lines = (trial_dir / "transcript.jsonl").read_text().splitlines()
+    assert len(lines) == 3 and "ECONNRESET" in lines[1]
+    assert json.loads((trial_dir / "checker.json").read_text())["resumes"] == 1
+
+
+def test_repeated_drops_are_an_infrastructure_failure(tmp_path, proxy, monkeypatch):
+    monkeypatch.setattr(harness, "RESUME_PAUSE_S", 0)
+    trial_dir = tmp_path / "trial-1"
+    script = f"echo '{DROP_EVENT}'"
+    result = run_trial(GO_TEST, "# index", trial_dir, None, proxy,
+                       opencode_argv=[*fake_agent(script), "agent", "the prompt"], test_dir=GO_TEST_DIR)
+    assert result.resumes == harness.MAX_RESUMES
+    assert result.reason.startswith("infrastructure: model connection dropped after 3 resumes")
+    assert not result.passed
+    rnd = RoundResult("t", 1, [result, _trial(True, 2)])
+    assert rnd.infrastructure_failures == 1
+    assert json.loads(rnd.to_json())["infrastructure_failures"] == 1
