@@ -54,8 +54,9 @@ func Latest(tags []string) (string, bool) {
 }
 
 // Load reads every repo's descriptor at its latest tag. Modules are sorted by
-// name. Repos with no semver tag are skipped silently; repos whose descriptor
-// is missing or invalid at the tag are skipped with a warning.
+// name. Repos with no semver tag are skipped silently; repos whose tags
+// cannot be listed, or whose descriptor is missing or invalid at the tag, are
+// skipped with a warning. Only a failure to list the repos is an error.
 func Load(ctx context.Context, p provider.Provider) ([]Module, []string, error) {
 	repos, err := p.List(ctx)
 	if err != nil {
@@ -66,7 +67,8 @@ func Load(ctx context.Context, p provider.Provider) ([]Module, []string, error) 
 	for _, repo := range repos {
 		tags, err := p.Tags(ctx, repo)
 		if err != nil {
-			return nil, nil, fmt.Errorf("%s: %w", repo, err)
+			warnings = append(warnings, fmt.Sprintf("%s: skipped, cannot list tags: %v", repo, err))
+			continue
 		}
 		tag, ok := Latest(tags)
 		if !ok {

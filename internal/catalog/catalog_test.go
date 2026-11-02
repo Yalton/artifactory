@@ -3,8 +3,12 @@ package catalog
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"repo.billbert.co/artifactory/artifactory/internal/provider"
 )
 
 type fake struct {
@@ -90,5 +94,30 @@ func TestLoadSortedAndFind(t *testing.T) {
 	}
 	if _, ok := Find(mods, "zz"); ok {
 		t.Error("Find zz found")
+	}
+}
+
+func TestLoadSkipsRepoWhoseTagsFail(t *testing.T) {
+	root := t.TempDir()
+	good := filepath.Join(root, "good")
+	os.Mkdir(good, 0o755)
+	os.WriteFile(filepath.Join(good, "module.yaml"), []byte(yamlFor("good")), 0o644)
+	// A folder that looks like a bare repo but is not one: git tag fails.
+	broken := filepath.Join(root, "broken.git")
+	os.MkdirAll(filepath.Join(broken, "objects"), 0o755)
+	os.WriteFile(filepath.Join(broken, "HEAD"), []byte("garbage\n"), 0o644)
+	p, err := provider.Open("dir:" + root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mods, warns, err := Load(context.Background(), p)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+	if len(mods) != 1 || mods[0].Name != "good" {
+		t.Errorf("mods = %+v", mods)
+	}
+	if len(warns) != 1 || !strings.HasPrefix(warns[0], "broken: skipped, cannot list tags") {
+		t.Errorf("warnings = %v", warns)
 	}
 }
