@@ -54,11 +54,13 @@ def check_godot(project: Path, test: AcceptanceTest, mirrors: Path, branch: str,
             runs = CheckResult("runs", False, "not run: build failed")
             moves = CheckResult("player_moves", False, "not run: build failed")
             visible = CheckResult("player_visible", False, "not run: build failed")
+            room = CheckResult("room_present", False, "not run: build failed")
             output = ""
         else:
             runs = _check_runs(run, copy, _blank_errors(test.fixture))
             moves = _check_probe(run, "player_moves")
             visible = _check_probe(run, "player_visible")
+            room = _check_probe(run, "room_present")
             output = run.output
         live = _check_live(copy, test.modules, output)
 
@@ -68,7 +70,7 @@ def check_godot(project: Path, test: AcceptanceTest, mirrors: Path, branch: str,
         unmodified = CheckResult("modules_unmodified", False,
                                  f"manual: judge kit edits from the tree (automatic: {unmodified.detail})")
 
-    checks = [build, runs, moves, visible, installed_check, live, unmodified, duplication]
+    checks = [build, runs, moves, visible, room, installed_check, live, unmodified, duplication]
     return TrialResult(test=test.name, trial=project.name, checks=checks, reason=None)
 
 
