@@ -92,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("test_dir")
     c.add_argument("project_dir")
     c.add_argument("--mirrors", help="directory of bare kit mirrors (Godot)")
-    c.add_argument("--branch", default="stitchability", help="branch kits must be published on (Godot)")
+    c.add_argument("--branch", default="main", help="branch kits must be published on (Godot)")
     c.add_argument("--baseline", action="store_true", help="baseline grading (Godot)")
     c.add_argument("--proxy", help="file GOPROXY directory (Go)")
     c.add_argument("-o", "--output", required=True)

@@ -50,10 +50,14 @@ OPENCODE = Path(os.environ.get("ARTIFACTORY_OPENCODE", Path.home() / ".opencode"
 GODOT_BINARY = Path(os.environ.get(
     "ARTIFACTORY_GODOT", "/opt/fastapps/godot/application-4.7/Godot_v4.7-stable_mono_linux.x86_64"))
 NUGET_PACKAGES = Path.home() / ".nuget" / "packages"
-KIT_REMOTE = "git@repo.billbert.co:yalt/"
+KIT_REMOTE = "git@repo.billbert.co:artifactory/"
 # Every spelling of the kit host a model might try, all served from the local mirrors.
-KIT_REMOTE_FORMS = [KIT_REMOTE, "ssh://git@repo.billbert.co/yalt/", "https://repo.billbert.co/yalt/"]
-STITCH_BRANCH = "stitchability"
+# The yalt forms are the kits' old home; they stay mapped for older indexes and transcripts.
+KIT_REMOTE_FORMS = [KIT_REMOTE, "ssh://git@repo.billbert.co/artifactory/", "https://repo.billbert.co/artifactory/",
+                    "git@repo.billbert.co:yalt/", "ssh://git@repo.billbert.co/yalt/", "https://repo.billbert.co/yalt/"]
+STITCH_BRANCH = "main"
+# The baseline round read kit main before the stitchability merge. That state is tagged
+# pre-stitchability in the 8 converted kits; a baseline rerun now reads the merged kits.
 BASELINE_BRANCH = "main"
 TRIAL_NAME = "Artifactory Trial"
 TRIAL_EMAIL = "trial@artifactory.invalid"

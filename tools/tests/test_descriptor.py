@@ -8,7 +8,7 @@ from artifactory.descriptor import DescriptorError, load_descriptor
 VALID = {
     "name": "FooKit", "ecosystem": "godot-csharp", "version": "1.0.0",
     "summary": "Does foo things.", "replaces": ["foo handling"],
-    "install": "git submodule add -b stitchability git@repo.billbert.co:yalt/FooKit.git addons/FooKit",
+    "install": "git submodule add git@repo.billbert.co:artifactory/FooKit.git addons/FooKit",
     "setup": [], "entry": ["Foo.Run"], "liveness": "[FooKit] live",
     "docs": "README.md", "example": "README.md", "test": "dotnet test",
 }

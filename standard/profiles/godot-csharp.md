@@ -16,7 +16,7 @@ Applies Stitchability Standard Draft 0.1.
 ## Install
 
 ```
-git submodule add -b stitchability git@repo.billbert.co:yalt/<Name>Kit.git addons/<Name>Kit
+git submodule add git@repo.billbert.co:artifactory/<Name>Kit.git addons/<Name>Kit
 ```
 
 Copy-the-folder and edit-in-place instructions are not supported.
