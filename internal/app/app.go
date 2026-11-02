@@ -56,7 +56,8 @@ type App struct {
 }
 
 // ResolveProvider opens the provider named by flagSpec, else the one in
-// artifactory.yaml in projectDir ("" means the current directory).
+// artifactory.yaml in projectDir ("" means the current directory). A relative
+// dir: path in artifactory.yaml is relative to projectDir.
 func (a App) ResolveProvider(flagSpec, projectDir string) (provider.Provider, error) {
 	spec := flagSpec
 	if spec == "" {
@@ -64,7 +65,7 @@ func (a App) ResolveProvider(flagSpec, projectDir string) (provider.Provider, er
 			projectDir = "."
 		}
 		if f, err := project.Load(projectDir); err == nil {
-			spec = f.Provider
+			spec = f.ProviderSpec(projectDir)
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}

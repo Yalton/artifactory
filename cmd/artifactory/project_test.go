@@ -112,3 +112,22 @@ func TestResolveProviderUsesProjectFile(t *testing.T) {
 		t.Errorf("code=%d out=%q err=%q", code, so, se)
 	}
 }
+
+func TestRelativeDirProviderResolvesAgainstProject(t *testing.T) {
+	kits := kitsDir(t)
+	proj := t.TempDir()
+	if err := os.Symlink(kits, filepath.Join(proj, "kits")); err != nil {
+		t.Fatal(err)
+	}
+	y := "ecosystem: godot-csharp\nprovider: dir:kits\nmodules:\n  - name: CursorKit\n"
+	os.WriteFile(filepath.Join(proj, "artifactory.yaml"), []byte(y), 0o644)
+	t.Chdir(t.TempDir())
+	code, so, se := runCmd("index", "--project", proj)
+	if code != 0 {
+		t.Fatalf("exit %d: %q %q", code, so, se)
+	}
+	md, _ := os.ReadFile(filepath.Join(proj, "MODULES.md"))
+	if !strings.Contains(string(md), "## CursorKit") {
+		t.Errorf("MODULES.md:\n%s", md)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -38,6 +39,15 @@ func Load(dir string) (File, error) {
 		return File{}, fmt.Errorf("%s: %w", FileName, err)
 	}
 	return f, nil
+}
+
+// ProviderSpec returns f.Provider with a relative dir: path resolved against
+// dir, the folder holding artifactory.yaml, so it does not depend on the cwd.
+func (f File) ProviderSpec(dir string) string {
+	if path, ok := strings.CutPrefix(f.Provider, "dir:"); ok && path != "" && !filepath.IsAbs(path) {
+		return "dir:" + filepath.Join(dir, path)
+	}
+	return f.Provider
 }
 
 // Save writes dir/artifactory.yaml with modules sorted by name.
