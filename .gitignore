@@ -8,3 +8,4 @@ __pycache__/
 # Trial trees hold nested git repos; never descend into them.
 /results/**/trial-*/
 /results/mirrors/
+/artifactory
