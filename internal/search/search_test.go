@@ -30,6 +30,10 @@ func TestRank(t *testing.T) {
 		{"ecosystem filter", []string{"config"}, "godot-csharp", nil},
 		{"stopwords only", []string{"the", "of"}, "", nil},
 		{"no match", []string{"send", "mail", "to", "the", "IRS"}, "", nil},
+		{"prefix is one-way", []string{"model"}, "", nil},
+		{"query prefix of token", []string{"persist"}, "", []string{"kvstore"}},
+		{"half the words must match", []string{"mouse", "inventory", "drag", "drop"}, "", nil},
+		{"half the words is enough", []string{"mouse", "cursor", "inventory", "drag"}, "", []string{"CursorKit"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

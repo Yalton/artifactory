@@ -20,6 +20,10 @@ func TestSearchCommand(t *testing.T) {
 		{"ecosystem filter", []string{"search", "config", "--ecosystem", "godot-csharp", "--provider", samples}, ""},
 		{"no match kits", []string{"search", "send", "mail", "to", "the", "IRS", "--provider", kits}, ""},
 		{"no match samples", []string{"search", "send", "mail", "to", "the", "IRS", "--provider", samples}, ""},
+		{"inventory gap kits", []string{"search", "inventory system with drag and drop items", "--provider", kits}, ""},
+		{"inventory gap samples", []string{"search", "inventory system with drag and drop items", "--provider", samples}, ""},
+		{"model loading samples", []string{"search", "model", "loading", "--provider", samples}, ""},
+		{"cursor short query", []string{"search", "mouse", "cursor", "--provider", kits}, "CursorKit"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

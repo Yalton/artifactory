@@ -24,7 +24,7 @@ const (
 	wEntry   = 1.0
 	// threshold is the lowest score reported: one entry-level word match.
 	threshold = 1.0
-	// minPrefix is the shortest token that may match by prefix, so
+	// minPrefix is the shortest query word that may match by prefix, so
 	// "persist" finds "persistent" and "cursor" finds "cursorkit".
 	minPrefix = 4
 )
@@ -41,12 +41,11 @@ func Tokens(s string) []string {
 	})
 }
 
+// match reports whether module token t matches query word q: equal, or t
+// starts with q when q has at least minPrefix letters. Matching is one-way,
+// so "model" never matches "mode".
 func match(q, t string) bool {
-	if q == t {
-		return true
-	}
-	return len(q) >= minPrefix && len(t) >= minPrefix &&
-		(strings.HasPrefix(t, q) || strings.HasPrefix(q, t))
+	return q == t || (len(q) >= minPrefix && strings.HasPrefix(t, q))
 }
 
 func fieldHas(tokens []string, q string) bool {
@@ -59,17 +58,22 @@ func fieldHas(tokens []string, q string) bool {
 }
 
 // Rank scores mods against the query words. It is case-insensitive, ignores
-// stopwords, drops modules scoring below the threshold, sorts by score
+// stopwords, and keeps a module only when it matches at least half of the
+// distinct query words (rounded up) and scores at least the threshold, so a
+// single shared word does not hide a gap. It sorts by score
 // descending then name, and keeps only ecosystem eco when eco is non-empty.
 func Rank(mods []catalog.Module, query []string, eco string) []Hit {
 	var qs []string
+	distinct := map[string]bool{}
 	for _, w := range query {
 		for _, t := range Tokens(w) {
 			if !stopwords[t] {
 				qs = append(qs, t)
+				distinct[t] = true
 			}
 		}
 	}
+	need := (len(distinct) + 1) / 2
 	hits := []Hit{}
 	for _, mod := range mods {
 		if eco != "" && mod.Ecosystem != eco {
@@ -80,20 +84,26 @@ func Rank(mods []catalog.Module, query []string, eco string) []Hit {
 		replaces := Tokens(strings.Join(mod.Replaces, " "))
 		entry := Tokens(strings.Join(mod.Entry, " "))
 		score := 0.0
+		matched := map[string]bool{}
 		for _, q := range qs {
 			// Each query word counts once, at its best field.
+			w := 0.0
 			switch {
 			case fieldHas(name, q):
-				score += wName
+				w = wName
 			case fieldHas(replaces, q):
-				score += wReplace
+				w = wReplace
 			case fieldHas(summary, q):
-				score += wSummary
+				w = wSummary
 			case fieldHas(entry, q):
-				score += wEntry
+				w = wEntry
+			}
+			if w > 0 {
+				score += w
+				matched[q] = true
 			}
 		}
-		if score >= threshold {
+		if len(matched) >= need && score >= threshold {
 			hits = append(hits, Hit{Module: mod, Score: score})
 		}
 	}
