@@ -30,11 +30,11 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import yaml
+
 from .acceptance import AcceptanceTest, load_acceptance
 from .checks.go import go_env
-from .descriptor import DescriptorError, load_descriptor
 from .goproxy import build_goproxy
-from .index import build_index, index_preamble
 from .result import CheckResult, TrialResult
 from .sandbox import sandbox_command
 
@@ -337,34 +337,27 @@ def run_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors: Pat
 
 # --- rounds ----------------------------------------------------------------
 
-def _godot_descriptors(mirrors: Path, modules: list[str], branch: str) -> list:
-    descriptors = []
-    with tempfile.TemporaryDirectory(prefix="artifactory-descriptors-") as tmp:
-        for name in modules:
-            mirror = mirrors / f"{name}.git"
-            if not mirror.is_dir():
-                raise RuntimeError(f"no mirror at {mirror}; run `artifactory mirror` first")
-            r = subprocess.run(["git", "show", f"{branch}:module.yaml"], cwd=mirror, capture_output=True, text=True)
-            if r.returncode != 0:
-                raise RuntimeError(f"{name}: no module.yaml on {branch}: {r.stderr.strip()}")
-            d = Path(tmp) / name
-            d.mkdir()
-            (d / "module.yaml").write_text(r.stdout)
-            try:
-                descriptors.append(load_descriptor(d))
-            except DescriptorError as e:
-                raise RuntimeError(f"{name}: invalid module.yaml on {branch}: {'; '.join(e.problems)}") from e
-    return descriptors
+def build_cli(out: Path) -> Path:
+    """Build the Go `artifactory` CLI into <out>/bin/artifactory and return its path."""
+    binary = Path(out) / "bin" / "artifactory"
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    r = subprocess.run(["go", "build", "-o", str(binary), "./cmd/artifactory"], cwd=REPO,
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"go build failed: {r.stderr.strip()}")
+    return binary
 
 
-def _go_descriptors(modules: list[str]) -> list:
-    descriptors = []
-    for name in modules:
-        try:
-            descriptors.append(load_descriptor(GO_SAMPLES / name))
-        except DescriptorError as e:
-            raise RuntimeError(f"{name}: {'; '.join(e.problems)}") from e
-    return descriptors
+def render_index(cli: Path, ecosystem: str, provider: str, modules: list[str]) -> str:
+    """The MODULES.md that `artifactory index --modules-only` renders for these modules."""
+    config = {"ecosystem": ecosystem, "provider": provider, "modules": [{"name": m} for m in modules]}
+    with tempfile.TemporaryDirectory(prefix="artifactory-index-") as tmp:
+        (Path(tmp) / "artifactory.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
+        r = subprocess.run([str(cli), "index", "--project", tmp, "--modules-only"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"artifactory index failed ({r.returncode}): {r.stderr.strip() or r.stdout.strip()}")
+        return (Path(tmp) / "MODULES.md").read_text()
 
 
 def _go_sample_dirs() -> list[Path]:
@@ -385,7 +378,7 @@ def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = F
         missing = [m for m in test.modules if m not in sample_names]
         if missing:
             raise RuntimeError(f"no Go sample module for: {', '.join(missing)}")
-        index_md = build_index(_go_descriptors(sorted(sample_names)), index_preamble("go"))
+        index_md = render_index(build_cli(root), "go", f"dir:{GO_SAMPLES}", sorted(sample_names))
         proxy = root / "goproxy"
         if proxy.exists():
             shutil.rmtree(proxy)
@@ -398,7 +391,7 @@ def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = F
         if baseline:
             index_md = BASELINE_README.read_text()
         else:
-            index_md = build_index(_godot_descriptors(mirrors, test.modules, branch), index_preamble(test.ecosystem))
+            index_md = render_index(build_cli(root), test.ecosystem, f"dir:{mirrors}", test.modules)
 
     out = root / test.name / ("baseline" if baseline else f"round-{round_no}")
     out.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,19 @@
+name: TransitionKit
+ecosystem: godot-csharp
+version: 0.1.0
+summary: "Full-screen scene transitions: fade, kaleidoscope shader, messages and threaded scene loading."
+replaces:
+  - "a fade-to-black scene change overlay"
+  - "threaded scene loading with a fade"
+  - "a message shown on a black transition screen"
+install: "git submodule add git@repo.billbert.co:artifactory/TransitionKit.git addons/TransitionKit"
+setup:
+  - "project.godot [autoload]: TransitionManager=\"*res://addons/TransitionKit/TransitionManager.tscn\""
+entry:
+  - "TransitionManager.Instance"
+  - "TransitionManager.TransitionToScene"
+  - "TransitionManager.FadeToBlack"
+liveness: "[TransitionKit] live"
+docs: README.md
+example: README.md#wiring
+test: "godot --headless --path ../TransitionKit.demo -- --smoke"

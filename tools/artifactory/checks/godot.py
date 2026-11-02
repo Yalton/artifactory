@@ -13,8 +13,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import yaml
+
 from artifactory.acceptance import AcceptanceTest
-from artifactory.descriptor import DescriptorError, load_descriptor
 from artifactory.checks.process import ANSI, Proc
 from artifactory.checks.process import run as run_process
 from artifactory.result import CheckResult, TrialResult
@@ -329,11 +330,14 @@ def _check_probe(run: _Proc, name: str) -> CheckResult:
 
 
 def _marker(project: Path, name: str) -> str:
-    """The kit's liveness marker: its descriptor's `liveness`, else the profile default."""
+    """The kit's liveness marker: `liveness` in its module.yaml, else the profile default."""
+    default = f"[{name}] live"
     try:
-        return load_descriptor(project / "addons" / name).liveness
-    except DescriptorError:
-        return f"[{name}] live"
+        data = yaml.safe_load((project / "addons" / name / "module.yaml").read_text())
+    except (OSError, yaml.YAMLError):
+        return default
+    liveness = data.get("liveness") if isinstance(data, dict) else None
+    return liveness if isinstance(liveness, str) and liveness else default
 
 
 def _check_live(project: Path, modules: list[str], output: str) -> CheckResult:
