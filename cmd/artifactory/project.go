@@ -11,6 +11,7 @@ import (
 	"repo.billbert.co/artifactory/artifactory/internal/descriptor"
 	"repo.billbert.co/artifactory/artifactory/internal/index"
 	"repo.billbert.co/artifactory/artifactory/internal/project"
+	"repo.billbert.co/artifactory/artifactory/skill"
 )
 
 const defaultProvider = "forgejo:repo.billbert.co/artifactory"
@@ -50,7 +51,40 @@ func runInit(out *output, args []string) int {
 	if err := project.Save(*dir, project.File{Ecosystem: *eco, Provider: *spec}); err != nil {
 		return out.fail(exitUsage, err.Error())
 	}
+	paths, err := writeSkills(*dir)
+	if err != nil {
+		return out.fail(exitUsage, err.Error())
+	}
+	if !out.json {
+		for _, p := range paths {
+			fmt.Fprintln(out.stdout, "wrote "+p)
+		}
+	}
 	return writeIndex(out, *dir, false)
+}
+
+// skillHarnessDirs are the agent harness folders that receive the skill.
+var skillHarnessDirs = []string{".claude", ".agents", ".opencode"}
+
+// writeSkills copies SKILL.md into skills/artifactory under each harness
+// folder that already exists in dir. It never creates the harness folder.
+func writeSkills(dir string) ([]string, error) {
+	var paths []string
+	for _, h := range skillHarnessDirs {
+		if st, err := os.Stat(filepath.Join(dir, h)); err != nil || !st.IsDir() {
+			continue
+		}
+		target := filepath.Join(dir, h, "skills", "artifactory")
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			return paths, err
+		}
+		p := filepath.Join(target, "SKILL.md")
+		if err := os.WriteFile(p, []byte(skill.Text()), 0o644); err != nil {
+			return paths, err
+		}
+		paths = append(paths, p)
+	}
+	return paths, nil
 }
 
 // runAdd puts modules in scope without installing them.
