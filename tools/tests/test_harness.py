@@ -191,3 +191,30 @@ def test_every_kit_url_form_resolves_to_mirrors(tmp_path):
                              env={"GIT_CONFIG_GLOBAL": str(cfg), "PATH": "/usr/bin:/bin"},
                              capture_output=True, text=True, cwd=tmp_path).stdout.strip()
         assert out == f"file://{tmp_path / 'mirrors'}/PoolKit.git"
+
+
+GOLDEN = ROOT / "internal" / "index" / "testdata"
+GODOT_TEST = load_acceptance(ROOT / "tests" / "acceptance" / "godot-capsule-room")
+
+
+@pytest.fixture(scope="module")
+def cli(tmp_path_factory):
+    return harness.build_cli(tmp_path_factory.mktemp("cli"))
+
+
+def test_render_index_matches_golden(cli):
+    out = harness.render_index(cli, "go", f"dir:{SAMPLES}", sorted(d.name for d in SAMPLES.iterdir() if (d / "go.mod").is_file()))
+    assert out == (GOLDEN / "go.golden.md").read_text()
+
+
+def test_render_index_raises_with_cli_stderr(cli):
+    with pytest.raises(RuntimeError, match="artifactory"):
+        harness.render_index(cli, "go", "dir:/nonexistent-provider-root", ["nope"])
+
+
+def test_render_index_godot_matches_golden(cli):
+    mirrors = harness.RESULTS / "mirrors"
+    if not all((mirrors / f"{m}.git").is_dir() for m in GODOT_TEST.modules):
+        pytest.skip("results/mirrors lacks the godot kits; run `artifactory mirror`")
+    out = harness.render_index(cli, "godot-csharp", f"dir:{mirrors}", GODOT_TEST.modules)
+    assert out == (GOLDEN / "godot-csharp.golden.md").read_text()

@@ -5,41 +5,6 @@ import argparse
 import sys
 from pathlib import Path
 
-from .descriptor import DescriptorError, load_descriptor
-from .index import build_index, index_preamble
-
-PREAMBLE = Path(__file__).resolve().parents[2] / "standard" / "preamble.md"
-
-
-def _load_all(dirs: list[str]):
-    ok, failed = [], False
-    for d in dirs:
-        try:
-            ok.append(load_descriptor(Path(d)))
-        except DescriptorError as e:
-            failed = True
-            for p in e.problems:
-                print(f"{d}: {p}", file=sys.stderr)
-    return ok, failed
-
-
-def cmd_validate(args) -> int:
-    _, failed = _load_all(args.module_dir)
-    return 1 if failed else 0
-
-
-def cmd_index(args) -> int:
-    descriptors, failed = _load_all(args.module_dir)
-    if failed:
-        return 1
-    ecosystems = {d.ecosystem for d in descriptors}
-    if len(ecosystems) > 1:
-        print(f"modules mix ecosystems: {', '.join(sorted(ecosystems))}", file=sys.stderr)
-        return 1
-    preamble = index_preamble(ecosystems.pop()) if ecosystems else PREAMBLE.read_text()
-    Path(args.output).write_text(build_index(descriptors, preamble))
-    return 0
-
 
 def cmd_check(args) -> int:
     from .acceptance import load_acceptance
@@ -81,13 +46,6 @@ def cmd_mirror(args) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="artifactory")
     sub = parser.add_subparsers(dest="command", required=True)
-    v = sub.add_parser("validate", help="validate module descriptors")
-    v.add_argument("module_dir", nargs="+")
-    v.set_defaults(func=cmd_validate)
-    i = sub.add_parser("index", help="build the module index")
-    i.add_argument("module_dir", nargs="+")
-    i.add_argument("-o", "--output", required=True)
-    i.set_defaults(func=cmd_index)
     c = sub.add_parser("check", help="grade one trial project (the harness runs this inside the sandbox)")
     c.add_argument("test_dir")
     c.add_argument("project_dir")
