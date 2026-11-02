@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -11,14 +12,26 @@ import (
 	"time"
 
 	"repo.billbert.co/artifactory/artifactory/internal/catalog"
+	"repo.billbert.co/artifactory/artifactory/internal/project"
 	"repo.billbert.co/artifactory/artifactory/internal/provider"
 )
 
-// resolveProvider opens the provider named by flagSpec. Task 4 adds the
-// artifactory.yaml step here.
-func resolveProvider(flagSpec string) (provider.Provider, error) {
-	if flagSpec != "" {
-		p, err := provider.Open(flagSpec)
+// resolveProvider opens the provider named by flagSpec, else the one in
+// artifactory.yaml in projectDir ("" means the current directory).
+func resolveProvider(flagSpec, projectDir string) (provider.Provider, error) {
+	spec := flagSpec
+	if spec == "" {
+		if projectDir == "" {
+			projectDir = "."
+		}
+		if f, err := project.Load(projectDir); err == nil {
+			spec = f.Provider
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+	}
+	if spec != "" {
+		p, err := provider.Open(spec)
 		if err != nil {
 			return nil, err
 		}
@@ -56,10 +69,11 @@ func runCatalog(out *output, args []string) int {
 	fs := newFlags("catalog")
 	spec := fs.String("provider", "", "provider spec, e.g. dir:/path")
 	eco := fs.String("ecosystem", "", "only this ecosystem")
+	proj := fs.String("project", "", "project directory holding artifactory.yaml")
 	if err := fs.Parse(args); err != nil || fs.NArg() > 0 {
 		return out.fail(exitUsage, "usage: artifactory catalog [--provider SPEC] [--ecosystem E]")
 	}
-	p, err := resolveProvider(*spec)
+	p, err := resolveProvider(*spec, *proj)
 	if err != nil {
 		return out.fail(exitUsage, err.Error())
 	}
@@ -92,6 +106,7 @@ func runCatalog(out *output, args []string) int {
 func runShow(out *output, args []string) int {
 	fs := newFlags("show")
 	spec := fs.String("provider", "", "provider spec, e.g. dir:/path")
+	proj := fs.String("project", "", "project directory holding artifactory.yaml")
 	// Allow the name before or after flags.
 	var name string
 	rest := args
@@ -109,7 +124,7 @@ func runShow(out *output, args []string) int {
 	if name == "" {
 		return out.fail(exitUsage, "usage: artifactory show NAME [--provider SPEC]")
 	}
-	p, err := resolveProvider(*spec)
+	p, err := resolveProvider(*spec, *proj)
 	if err != nil {
 		return out.fail(exitUsage, err.Error())
 	}

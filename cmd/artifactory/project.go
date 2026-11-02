@@ -1,0 +1,172 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"repo.billbert.co/artifactory/artifactory/internal/catalog"
+	"repo.billbert.co/artifactory/artifactory/internal/descriptor"
+	"repo.billbert.co/artifactory/artifactory/internal/index"
+	"repo.billbert.co/artifactory/artifactory/internal/project"
+)
+
+const defaultProvider = "forgejo:repo.billbert.co/artifactory"
+
+// splitArgs separates leading positional names from flags so `add A B --project D` works.
+func splitArgs(args []string) (names, flags []string) {
+	i := 0
+	for i < len(args) && !strings.HasPrefix(args[i], "-") {
+		i++
+	}
+	return args[:i], args[i:]
+}
+
+// runInit creates artifactory.yaml, then writes the index.
+func runInit(out *output, args []string) int {
+	const use = "usage: artifactory init [--ecosystem E] [--provider SPEC] [--project DIR]"
+	fs := newFlags("init")
+	eco := fs.String("ecosystem", "", "ecosystem (default: detected)")
+	spec := fs.String("provider", defaultProvider, "provider spec")
+	dir := fs.String("project", ".", "project directory")
+	if err := fs.Parse(args); err != nil || fs.NArg() > 0 {
+		return out.fail(exitUsage, use)
+	}
+	if _, err := os.Stat(filepath.Join(*dir, project.FileName)); err == nil {
+		return out.fail(exitProblems, project.FileName+" already exists in "+*dir)
+	}
+	if *eco == "" {
+		e, err := project.Detect(*dir)
+		if err != nil {
+			return out.fail(exitUsage, err.Error())
+		}
+		*eco = e
+	}
+	if !contains(descriptor.Ecosystems, *eco) {
+		return out.fail(exitUsage, "ecosystem must be one of "+strings.Join(descriptor.Ecosystems, ", "))
+	}
+	if err := project.Save(*dir, project.File{Ecosystem: *eco, Provider: *spec}); err != nil {
+		return out.fail(exitUsage, err.Error())
+	}
+	return writeIndex(out, *dir, false)
+}
+
+// runAdd puts modules in scope without installing them.
+func runAdd(out *output, args []string) int {
+	const use = "usage: artifactory add NAME... [--project DIR]"
+	names, rest := splitArgs(args)
+	fs := newFlags("add")
+	dir := fs.String("project", ".", "project directory")
+	if err := fs.Parse(rest); err != nil || fs.NArg() > 0 {
+		return out.fail(exitUsage, use)
+	}
+	names = append(names, fs.Args()...)
+	if len(names) == 0 {
+		return out.fail(exitUsage, use)
+	}
+	f, err := project.Load(*dir)
+	if err != nil {
+		return out.fail(exitUsage, loadProjectMsg(err))
+	}
+	p, err := resolveProvider("", *dir)
+	if err != nil {
+		return out.fail(exitUsage, err.Error())
+	}
+	mods, _, err := catalog.Load(context.Background(), p)
+	if err != nil {
+		return out.fail(exitUsage, err.Error())
+	}
+	for _, n := range names {
+		m, ok := catalog.Find(mods, n)
+		if !ok {
+			return out.fail(exitProblems, "no module named "+n)
+		}
+		if m.Ecosystem != f.Ecosystem {
+			return out.fail(exitProblems, fmt.Sprintf("%s is a %s module; this project is %s", n, m.Ecosystem, f.Ecosystem))
+		}
+	}
+	for _, n := range names {
+		if !hasEntry(f.Modules, n) {
+			f.Modules = append(f.Modules, project.Entry{Name: n})
+		}
+	}
+	if err := project.Save(*dir, f); err != nil {
+		return out.fail(exitUsage, err.Error())
+	}
+	return writeIndex(out, *dir, false)
+}
+
+// runIndex rewrites MODULES.md and the AGENTS.md block.
+func runIndex(out *output, args []string) int {
+	fs := newFlags("index")
+	dir := fs.String("project", ".", "project directory")
+	only := fs.Bool("modules-only", false, "write MODULES.md only")
+	if err := fs.Parse(args); err != nil || fs.NArg() > 0 {
+		return out.fail(exitUsage, "usage: artifactory index [--project DIR] [--modules-only]")
+	}
+	return writeIndex(out, *dir, *only)
+}
+
+func writeIndex(out *output, dir string, modulesOnly bool) int {
+	f, err := project.Load(dir)
+	if err != nil {
+		return out.fail(exitUsage, loadProjectMsg(err))
+	}
+	var ds []descriptor.Descriptor
+	if len(f.Modules) > 0 {
+		p, err := resolveProvider("", dir)
+		if err != nil {
+			return out.fail(exitUsage, err.Error())
+		}
+		mods, _, err := catalog.Load(context.Background(), p)
+		if err != nil {
+			return out.fail(exitUsage, err.Error())
+		}
+		for _, e := range f.Modules {
+			m, ok := catalog.Find(mods, e.Name)
+			if !ok {
+				return out.fail(exitProblems, "module "+e.Name+" is in scope but not in the catalog")
+			}
+			ds = append(ds, m.Descriptor)
+		}
+	}
+	written := []string{"MODULES.md"}
+	if err := os.WriteFile(filepath.Join(dir, "MODULES.md"), []byte(index.Render(f.Ecosystem, ds)), 0o644); err != nil {
+		return out.fail(exitUsage, err.Error())
+	}
+	if !modulesOnly {
+		if err := index.WriteAgents(filepath.Join(dir, "AGENTS.md"), index.AgentsBlock(f.Ecosystem)); err != nil {
+			return out.fail(exitUsage, err.Error())
+		}
+		written = append(written, "AGENTS.md")
+	}
+	out.result("wrote "+strings.Join(written, ", "), map[string]any{"written": written, "modules": len(ds)})
+	return exitOK
+}
+
+func loadProjectMsg(err error) string {
+	if os.IsNotExist(err) {
+		return project.FileName + " not found: run artifactory init"
+	}
+	return err.Error()
+}
+
+func hasEntry(es []project.Entry, name string) bool {
+	for _, e := range es {
+		if e.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func contains(ss []string, s string) bool {
+	for _, x := range ss {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
