@@ -1,0 +1,19 @@
+name: DevConsoleKit
+ecosystem: godot-csharp
+version: 0.1.0
+summary: "In-game developer console with a command dispatcher, history and built-in commands."
+replaces:
+  - "a debug console UI with typed commands"
+  - "a command registry and dispatcher for cheats and debug actions"
+install: "git submodule add git@repo.billbert.co:artifactory/DevConsoleKit.git addons/DevConsoleKit"
+setup:
+  - "project.godot [autoload]: DevConsoleManager=\"*res://addons/DevConsoleKit/DevConsoleManager.cs\""
+  - "instance addons/DevConsoleKit/DevConsole.tscn under a CanvasLayer in the main scene"
+entry:
+  - "DevConsoleManager.Instance"
+  - "BaseCommandHandler.RegisterCommands"
+  - "DevConsole.tscn"
+liveness: "[DevConsoleKit] live"
+docs: README.md
+example: README.md#wiring
+test: "godot --headless --path ../DevConsoleKit.demo -- --smoke"

@@ -1,0 +1,16 @@
+name: godot-lantern-keep
+ecosystem: godot-csharp
+fixture: ../../../fixtures/godot-blank
+prompt: brief.md
+roadmap_prompt: roadmap-prompt.md
+probe: lantern
+time_limit_s: 14400
+modules:
+  - InputRemapKit
+  - SettingsKit
+  - CursorKit
+  - DebugLogKit
+  - DevConsoleKit
+  - CrashKit
+  - TransitionKit
+  - RunSaveKit

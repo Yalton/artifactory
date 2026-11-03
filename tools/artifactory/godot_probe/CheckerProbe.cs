@@ -2,8 +2,15 @@
 // Presses W, then D, and reports whether the node in group "player" moved
 // whether the current Camera3D sees it before and after moving, and whether drawn
 // geometry surrounds its start point (a floor and four walls).
+// With ARTIFACTORY_PROBE_MODE=lantern the main scene is a title screen, so the probe
+// loads the rooms itself: the move/visible check runs in the courtyard, then every room
+// must hold a player, then `interact` next to the keeper in the hall must show the dialogue.
+// Lantern mode does not report room_present: its `rooms` check covers the level.
+using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Threading.Tasks;
 using Godot;
 
 namespace ArtifactoryChecker;
@@ -17,11 +24,18 @@ public partial class CheckerProbe : Node
     private string _problem;
     private string _unseenStart = "";
     private string _roomMissing = "";
+    private bool _lantern;
 
     public override void _Ready()
     {
         ProcessMode = ProcessModeEnum.Always;
         _start = Time.GetTicksMsec();
+        _lantern = OS.GetEnvironment("ARTIFACTORY_PROBE_MODE") == "lantern";
+        if (_lantern)
+        {
+            _stage = -1;  // the timed stages below never run
+            RunLantern();
+        }
     }
 
     public override void _Process(double delta)
@@ -55,6 +69,149 @@ public partial class CheckerProbe : Node
                 break;
         }
     }
+
+    // --- lantern mode ---------------------------------------------------------
+
+    private const string Courtyard = "res://rooms/courtyard.tscn";
+    private const string Hall = "res://rooms/hall.tscn";
+    private static readonly string[] Rooms = { "courtyard", "hall", "tower" };
+    private const float KeeperDistance = 1f;
+    private const ulong SceneChangeMs = 5000, DialogueWaitMs = 2000;
+
+    private async void RunLantern()
+    {
+        try
+        {
+            await Frames(1);
+            if (await ChangeTo(Courtyard))
+            {
+                await Seconds(1.0);
+                FindPlayer();
+                if (_player != null) _p0 = _player.GlobalPosition;
+                _unseenStart = Unseen();
+                SendKey(Key.W, true);
+                await Seconds(1.0);
+                SendKey(Key.W, false);
+                if (Valid()) _p1 = _player.GlobalPosition;
+                SendKey(Key.D, true);
+                await Seconds(1.0);
+                SendKey(Key.D, false);
+                if (Valid()) _p2 = _player.GlobalPosition;
+            }
+            else
+            {
+                _player = null;
+                _problem = "no_room";
+            }
+            Report();
+
+            var missing = new List<string>();
+            foreach (string room in Rooms)
+            {
+                if (!await ChangeTo($"res://rooms/{room}.tscn") || GetTree().GetNodesInGroup("player").Count == 0)
+                    missing.Add(room);
+            }
+            GD.Print($"PROBE rooms={Bool(missing.Count == 0)} missing={(missing.Count == 0 ? "none" : string.Join(",", missing))}");
+
+            string problem = await Dialogue();
+            GD.Print($"PROBE dialogue={Bool(problem == null)} problem={problem ?? "none"}");
+        }
+        catch (Exception e)
+        {
+            GD.Print($"PROBE lantern_error={e.GetType().Name}: {e.Message}");
+        }
+        finally
+        {
+            GetTree().Quit();
+        }
+    }
+
+    private static string Bool(bool b) => b ? "true" : "false";
+
+    // Null when the dialogue showed, else why not.
+    private async Task<string> Dialogue()
+    {
+        if (!await ChangeTo(Hall)) return "no_room";
+        FindPlayer();
+        if (!Valid()) return "no_player";
+        Node3D keeper = GetTree().GetNodesInGroup("keeper").OfType<Node3D>().FirstOrDefault();
+        if (keeper == null) return "no_keeper";
+        if (!InputMap.HasAction("interact")) return "no_action";
+
+        // Stand 1 m in front of the keeper (its +Z, the model front), level with where the player was, facing it.
+        Vector3 front = keeper.GlobalBasis.Z with { Y = 0 };
+        front = front.LengthSquared() < 1e-6f ? Vector3.Back : front.Normalized();
+        Vector3 at = keeper.GlobalPosition + front * KeeperDistance;
+        _player.GlobalPosition = at with { Y = _player.GlobalPosition.Y };
+        Vector3 look = keeper.GlobalPosition with { Y = _player.GlobalPosition.Y };
+        if (look.DistanceTo(_player.GlobalPosition) > 1e-3f) _player.LookAt(look, Vector3.Up);
+        if (_player is CharacterBody3D body) body.Velocity = Vector3.Zero;
+
+        // Enough steps for an Area3D around the keeper to report the overlap.
+        await PhysicsFrames(5);
+        // The dialogue must open because of `interact`, so one already showing does not count.
+        if (DialogueShown()) return "shown_before_interact";
+        Input.ParseInputEvent(new InputEventAction { Action = "interact", Pressed = true });
+        await PhysicsFrames(1);
+        Input.ParseInputEvent(new InputEventAction { Action = "interact", Pressed = false });
+        ulong deadline = Time.GetTicksMsec() + DialogueWaitMs;
+        while (Time.GetTicksMsec() <= deadline)
+        {
+            if (DialogueShown()) return null;
+            await Frames(1);
+        }
+        return DialogueShown() ? null : "not_shown";
+    }
+
+    // A CanvasLayer or plain Node says nothing by itself (a layer is visible by default):
+    // it counts only when it is visible and some CanvasItem under it is drawn.
+    private bool DialogueShown() => GetTree().GetNodesInGroup("dialogue").Any(n => n switch
+    {
+        CanvasItem c => c.IsVisibleInTree(),
+        Node3D n3 => n3.IsVisibleInTree(),
+        CanvasLayer l => l.Visible && AnyDrawnCanvasItem(l),
+        _ => AnyDrawnCanvasItem(n),
+    });
+
+    private static bool AnyDrawnCanvasItem(Node n) =>
+        n.FindChildren("*", "CanvasItem", true, false).OfType<CanvasItem>().Any(c => c.IsVisibleInTree());
+
+    // Change scene and wait until the new instance of `path` is current, plus one frame.
+    // A missing room is a probe failure, so it is never handed to the loader.
+    private async Task<bool> ChangeTo(string path)
+    {
+        if (!ResourceLoader.Exists(path)) return false;
+        Node old = GetTree().CurrentScene;
+        ulong oldId = old == null ? 0 : old.GetInstanceId();
+        if (GetTree().ChangeSceneToFile(path) != Error.Ok) return false;
+        ulong deadline = Time.GetTicksMsec() + SceneChangeMs;
+        while (true)
+        {
+            Node cur = GetTree().CurrentScene;
+            if (cur != null && cur.GetInstanceId() != oldId && cur.SceneFilePath == path) break;
+            if (Time.GetTicksMsec() > deadline) return false;
+            await Frames(1);
+        }
+        await Frames(1);
+        return true;
+    }
+
+    private async Task Frames(int n)
+    {
+        for (int i = 0; i < n; i++) await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+    }
+
+    private async Task PhysicsFrames(int n)
+    {
+        for (int i = 0; i < n; i++) await ToSignal(GetTree(), SceneTree.SignalName.PhysicsFrame);
+    }
+
+    private async Task Seconds(double s)
+    {
+        await ToSignal(GetTree().CreateTimer(s, true), SceneTreeTimer.SignalName.Timeout);
+    }
+
+    // --- shared --------------------------------------------------------------
 
     private void FindPlayer()
     {
@@ -101,7 +258,7 @@ public partial class CheckerProbe : Node
         {
             GD.Print($"PROBE player_moves=false w=0 d=0 problem={_problem}");
             GD.Print($"PROBE player_visible=false problem={_problem}");
-            GD.Print($"PROBE room_present=false problem={_problem}");
+            if (!_lantern) GD.Print($"PROBE room_present=false problem={_problem}");
             return;
         }
         Vector3 w = _p1 - _p0;
@@ -116,6 +273,7 @@ public partial class CheckerProbe : Node
         Camera3D cam = GetViewport().GetCamera3D();
         string camName = cam == null ? "none" : cam.Name.ToString();
         GD.Print($"PROBE player_visible={(seen ? "true" : "false")} camera={camName} start={Label(_unseenStart)} end={Label(end)}");
+        if (_lantern) return;
         GD.Print(_roomMissing == "" ? "PROBE room_present=true"
             : $"PROBE room_present=false missing={_roomMissing}");
     }
@@ -141,7 +299,7 @@ public partial class CheckerProbe : Node
     }
 
     // World-space boxes of every drawn mesh outside the player (and outside the camera, if given).
-    private System.Collections.Generic.List<Aabb> SceneBoxes(Camera3D cam) =>
+    private List<Aabb> SceneBoxes(Camera3D cam) =>
         GetTree().Root.FindChildren("*", "GeometryInstance3D", true, false).OfType<GeometryInstance3D>()
             .Where(g => g.IsVisibleInTree() && Drawn(g) && g != _player && !_player.IsAncestorOf(g)
                 && (cam == null || !cam.IsAncestorOf(g)))

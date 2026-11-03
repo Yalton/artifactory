@@ -1,0 +1,20 @@
+name: CrashKit
+ecosystem: godot-csharp
+version: 0.1.0
+summary: "Crash reports, freeze watchdog and breadcrumbs for managed and engine-swallowed exceptions."
+replaces:
+  - "writing crash reports on unhandled exceptions"
+  - "a freeze watchdog for a hung main thread"
+  - "detecting that the last run ended abnormally"
+  - "logging engine-swallowed exceptions"
+install: "git submodule add git@repo.billbert.co:artifactory/CrashKit.git addons/CrashKit"
+setup:
+  - "call CrashKit.CrashHandler.Initialize() once, from the earliest autoload _Ready or a bootstrap script"
+entry:
+  - "CrashHandler.Initialize"
+  - "CrashHandler.Breadcrumb"
+  - "CrashHandler.NotifyGracefulShutdown"
+liveness: "[CrashKit] live"
+docs: README.md
+example: README.md#wiring
+test: "godot --headless --path ../CrashKit.demo -- --smoke"

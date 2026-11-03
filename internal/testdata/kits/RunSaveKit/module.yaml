@@ -1,0 +1,20 @@
+name: RunSaveKit
+ecosystem: godot-csharp
+version: 0.1.0
+summary: "Versioned save file with atomic writes, optional encryption, migration and safe recovery."
+replaces:
+  - "saving a run to a file safely"
+  - "save file versioning and migration"
+  - "recovering from a corrupt or missing save"
+  - "encrypting a save file"
+install: "git submodule add git@repo.billbert.co:artifactory/RunSaveKit.git addons/RunSaveKit"
+setup: []
+entry:
+  - "SaveSlot"
+  - "SaveSlot.Save"
+  - "SaveSlot.TryLoad"
+  - "LoadOutcome"
+liveness: "[RunSaveKit] live"
+docs: README.md
+example: README.md#wiring
+test: "godot --headless --path ../RunSaveKit.demo -- --smoke"

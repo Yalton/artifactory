@@ -8,6 +8,10 @@ Layout of one trial directory:
       bin/godot         launcher for the real Godot binary (read-only in the sandbox)
       transcript.jsonl  opencode JSON events (stdout)
       opencode.log      opencode stderr
+      transcript-<n>.jsonl, opencode-<n>.log
+                        the same per session, in roadmap trials (frontier, ornith)
+      roadmap.jsonl     ornith: the beads its writing session created
+      beads-final.jsonl roadmap trials: every bead at the end of the build loop
       checker-home/     HOME for the checker run (the only writable path then)
       checker.log       checker output
       checker.json      the final TrialResult, including the harness reason
@@ -20,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -27,14 +32,14 @@ import sys
 import tempfile
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+import yaml
 
 from .acceptance import AcceptanceTest, load_acceptance
 from .checks.go import go_env
-from .descriptor import DescriptorError, load_descriptor
 from .goproxy import build_goproxy
-from .index import build_index, index_preamble
 from .result import CheckResult, TrialResult
 from .sandbox import sandbox_command
 
@@ -42,6 +47,9 @@ REPO = Path(__file__).resolve().parents[2]
 RESULTS = REPO / "results"
 GO_SAMPLES = REPO / "samples" / "go"
 GODOT_TEST = REPO / "tests" / "acceptance" / "godot-capsule-room"
+BD_FALLBACK = Path.home() / ".local" / "lib" / "node_modules" / "@beads" / "bd" / "bin" / "bd"
+DEFAULT_ARC_SRC = Path("/home/yalt/Documents/Projects/Tech/AI/arc")
+DENIAL_MARK = "do not edit it."  # the tail of arc's deny reason for a write inside an installed module
 BASELINE_README = Path("/data/fast/Projects/Tech/Games/Godot/Modules/README.md")
 
 MODEL = "agentbox/ornith-1.5-q4"
@@ -73,6 +81,16 @@ DROP_PATTERNS = ("Transport:", "ECONNRESET", "socket connection was closed",
                  "Standalone server exited before reporting readiness")
 INFRA_PREFIX = "infrastructure: "
 
+ROADMAPS = ("none", "frontier", "ornith")
+WRITER_ACTOR = "roadmap-writer"  # the frontier roadmap writer's bd actor
+BD_TIMEOUT_S = 120  # one host-side bd call; a hung bd must not end the trial's bookkeeping silently
+WRITING_LIMIT_S = 1200  # the ornith writing phase's share of the trial budget, at most
+QUICK_SESSION_S = 60    # a loop session shorter than this, with no bead status change, is "quick"
+STALL_RUN = 3           # this many quick sessions in a row stop the loop (a dead model server)
+BEAD_PROMPT = "Work bead {id}. Run bd show {id} first, do only what it says, run its check, then bd close {id}."
+STALL_PROMPT = ("Some beads are unfinished. Run bd list --status open,blocked and work through them in any order, "
+                "ignoring dependencies. Close each one you finish.")
+
 GO_ENV_KEYS = ("GOPROXY", "GONOSUMDB", "GOFLAGS", "GOMODCACHE", "GOPATH", "GOTOOLCHAIN", "GOWORK")
 
 
@@ -81,6 +99,9 @@ class RoundResult:
     test: str
     round: int
     results: list[TrialResult] = field(default_factory=list)
+    product: bool = False
+    arc: bool = False
+    roadmap: str = "none"
 
     @property
     def passes(self) -> int:
@@ -98,6 +119,9 @@ class RoundResult:
         return json.dumps({
             "test": self.test,
             "round": self.round,
+            "product": self.product,
+            "arc": self.arc,
+            "roadmap": self.roadmap,
             "passes": self.passes,
             "met_bar": self.met_bar,
             "infrastructure_failures": self.infrastructure_failures,
@@ -115,6 +139,7 @@ class Trial:
     proxy: Path | None
     env: dict[str, str]
     ro_binds: list[Path]
+    base_commit: str | None = None  # the fixture commit (arc mode), the checker's gate base
 
 
 # --- trial setup -----------------------------------------------------------
@@ -208,9 +233,79 @@ def _tool_binds(mirrors: Path | None, proxy: Path | None, bin_dir: Path) -> list
     return binds
 
 
+def _run_tool(argv: list[str], env: dict[str, str], home: Path, cwd: Path | None = None) -> None:
+    r = subprocess.run(argv, capture_output=True, text=True, cwd=cwd, env={**env, "HOME": str(home)})
+    if r.returncode != 0:
+        raise RuntimeError(f"{' '.join(argv[:2])} failed ({r.returncode}): {r.stderr.strip() or r.stdout.strip()}")
+
+
+def bd_binary() -> Path:
+    """The real bd binary. `~/.local/bin/bd` is a Node wrapper that runs itself forever when copied."""
+    found = shutil.which("bd")
+    if found:
+        real = Path(found).resolve().parent / "bd"  # the wrapper resolves to bd.js beside the binary
+        if real.is_file() and _magic(real) == b"\x7fELF":
+            return real
+    if BD_FALLBACK.is_file():
+        return BD_FALLBACK.resolve()
+    raise FileNotFoundError(f"bd not found: neither the package beside `which bd` nor {BD_FALLBACK}")
+
+
+def _magic(path: Path) -> bytes:
+    with open(path, "rb") as f:  # the binary is ~150 MB and this runs on every bd call
+        return f.read(4)
+
+
+def bd_env(actor: str, home: Path) -> dict[str, str]:
+    """Metrics off, a fixed actor, bd's state inside `home`."""
+    return {"DO_NOT_TRACK": "1", "BEADS_ACTOR": actor, "HOME": str(home)}
+
+
+def bd_run(project: Path, env: dict, *args) -> subprocess.CompletedProcess:
+    """Run bd in `project` with `env`, host-side. env must carry bd_env's values; PATH defaults to the host's (bd runs git)."""
+    if "HOME" not in env:  # never fall back to the user's HOME: bd would write ~/.beads there
+        raise ValueError("bd_run needs HOME in env (see bd_env)")
+    try:
+        return subprocess.run([str(bd_binary()), *args], cwd=project, env={"PATH": os.environ["PATH"], **env},
+                              capture_output=True, text=True, timeout=BD_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"bd {' '.join(args[:2])} timed out after {BD_TIMEOUT_S} s") from None
+
+
+def _product_setup(test: AcceptanceTest, cli: Path, project: Path, home: Path, bin_dir: Path,
+                   mirrors: Path | None, env: dict[str, str], arc: Path | None = None) -> None:
+    """Put the CLI in the trial bin, point the project at the local mirrors and run `artifactory index`.
+
+    With `arc` the project also gets arc: registry, opencode plugin, no pre-commit hook, and the
+    index registers modules with arc. The project must already be a git repository."""
+    if mirrors is None:
+        raise ValueError("--product needs local kit mirrors")
+    shutil.copy2(cli, bin_dir / "artifactory")
+    if arc is not None:
+        shutil.copy2(arc, bin_dir / "arc")
+    config = {"ecosystem": test.ecosystem, "provider": f"dir:{mirrors}",
+              "modules": [{"name": m} for m in test.modules]}
+    (project / "artifactory.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
+    if arc is not None:
+        (project / ".arch").mkdir(exist_ok=True)
+        shutil.copy2(test.dir / "arc-registry.yaml", project / ".arch" / "registry.yaml")
+        _run_tool([str(bin_dir / "arc"), "init", "--opencode", "--no-detect", "--ci", "none"], env, home, project)
+        (project / ".git" / "hooks" / "pre-commit").unlink(missing_ok=True)
+    _run_tool([str(bin_dir / "artifactory"), "index", "--project", str(project), "--arc",
+               "on" if arc is not None else "off"], env, home)
+
+
 def prepare_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors: Path | None,
-                  proxy: Path | None) -> Trial:
-    """Create project (fixture + MODULES.md, committed), HOME and the godot launcher."""
+                  proxy: Path | None, cli: Path | None = None, arc: Path | None = None, roadmap: str = "none") -> Trial:
+    """Create project (fixture + MODULES.md, committed), HOME and the godot launcher.
+
+    With `cli` (product mode) the CLI is copied into the trial bin and writes MODULES.md itself.
+    With `arc` (arc mode, needs `cli`) arc is installed in the project too.
+    With `roadmap` frontier or ornith, bd is installed (metrics off, actor ornith) and initialised in
+    the project; frontier also imports <test.dir>/roadmaps/frontier.jsonl. `workspace` (only for
+    prepare_roadmap_workspace) installs bd with actor roadmap-writer and imports nothing."""
+    if arc is not None and cli is None:
+        raise ValueError("--arc needs --product")
     trial_dir = Path(trial_dir).resolve()
     if trial_dir.exists():
         raise FileExistsError(f"{trial_dir} already exists; remove it to rerun the trial")
@@ -219,20 +314,79 @@ def prepare_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors:
     project, home, bin_dir = trial_dir / "project", trial_dir / "home", trial_dir / "bin"
     trial_dir.mkdir(parents=True)
     shutil.copytree(test.fixture, project, symlinks=True)
-    (project / "MODULES.md").write_text(index_md)
-    _git("init", "-q", "-b", "main", cwd=project)
-    _git("add", "-A", cwd=project)
-    _git("-c", f"user.name={TRIAL_NAME}", "-c", f"user.email={TRIAL_EMAIL}", "-c", "commit.gpgsign=false",
-         "commit", "-qm", "Initial project", cwd=project)
     home.mkdir()
     _write_home(home, mirrors)
     bin_dir.mkdir()
+    env = _base_env(home, bin_dir, proxy)
+    _git("init", "-q", "-b", "main", cwd=project)
+    if cli is not None:
+        _product_setup(test, Path(cli), project, home, bin_dir, mirrors, env, Path(arc) if arc else None)
+    else:
+        (project / "MODULES.md").write_text(index_md)
+    _git("add", "-A", cwd=project)
+    _git("-c", f"user.name={TRIAL_NAME}", "-c", f"user.email={TRIAL_EMAIL}", "-c", "commit.gpgsign=false",
+         "commit", "-qm", "Initial project", cwd=project)
+    base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=project, check=True, capture_output=True,
+                          text=True).stdout.strip() if arc is not None else None
+    if roadmap != "none":
+        shutil.copy2(bd_binary(), bin_dir / "bd")
+        env.update(bd_env(WRITER_ACTOR if roadmap == "workspace" else "ornith", home))
+        for args in [("init", "--stealth", "--non-interactive"),
+                     *([("import", str(test.dir / "roadmaps" / "frontier.jsonl"))] if roadmap == "frontier" else [])]:
+            r = bd_run(project, env, *args)
+            if r.returncode != 0:
+                raise RuntimeError(f"bd {args[0]} failed ({r.returncode}): {r.stderr.strip() or r.stdout.strip()}")
     # A script, never a symlink: a symlinked Godot deadlocks headless.
     launcher = bin_dir / "godot"
     launcher.write_text(f'#!/bin/sh\nexec "{GODOT_BINARY}" "$@"\n')
     launcher.chmod(0o755)
     return Trial(trial_dir, project, home, bin_dir, mirrors, proxy,
-                 _base_env(home, bin_dir, proxy), _tool_binds(mirrors, proxy, bin_dir))
+                 env, _tool_binds(mirrors, proxy, bin_dir), base)
+
+
+def prepare_roadmap_workspace(test: AcceptanceTest, out_dir: Path, mirrors: Path, cli: Path, arc: Path) -> tuple[Trial, str]:
+    """A frontier trial's product+arc project without a roadmap, for the writer subagent.
+
+    BRIEF.md and ROADMAP-PROMPT.md sit in the project (git-excluded). Returns the trial and the
+    `env` prefix the writer puts before every command."""
+    if not test.roadmap_prompt:
+        raise ValueError(f"{test.dir / 'test.yaml'} has no roadmap_prompt")
+    trial = prepare_trial(test, "", out_dir, mirrors, None, cli=cli, arc=arc, roadmap="workspace")
+    (trial.project / "BRIEF.md").write_text(test.prompt)
+    (trial.project / "ROADMAP-PROMPT.md").write_text(test.roadmap_prompt)
+    with open(trial.project / ".git" / "info" / "exclude", "a") as f:
+        f.write("\nBRIEF.md\nROADMAP-PROMPT.md\n")
+    prefix = (f"env PATH={shlex.quote(str(trial.bin))}:$PATH DO_NOT_TRACK=1 BEADS_ACTOR={WRITER_ACTOR} "
+              f"HOME={shlex.quote(str(trial.home))}")
+    return trial, prefix
+
+
+def export_roadmap(project: Path, dest: Path) -> int:
+    """Export the writer's beads to `dest` (jsonl) and return how many; refuse a roadmap the writer left
+    claimed or that a different actor touched (a bead the build would trip over, or not frontier's own)."""
+    project, dest = Path(project).resolve(), Path(dest)
+    env = bd_env(WRITER_ACTOR, project.parent / "home")
+    tmp = dest.with_name(f".{dest.name}.tmp")  # moved into place only once the beads pass
+    try:
+        r = bd_run(project, env, "export", "-o", str(tmp))
+        if r.returncode != 0:
+            raise RuntimeError(f"bd export failed ({r.returncode}): {r.stderr.strip() or r.stdout.strip()}")
+        rows = [json.loads(line) for line in tmp.read_text().splitlines() if line.strip()]
+        beads = [b for b in rows if b.get("_type", "issue") == "issue"]
+        bad = _unexportable(beads)
+        if bad:
+            raise RuntimeError("roadmap not exportable: " + "; ".join(bad))
+        tmp.replace(dest)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return len(beads)
+
+
+def _unexportable(beads: list[dict]) -> list[str]:
+    bad = [f"{b['id']}: " + ("in_progress" if b.get("status") == "in_progress" else f"assignee {b['assignee']!r}")
+           for b in beads if b.get("status") == "in_progress" or b.get("assignee") not in (None, "", WRITER_ACTOR)]
+    bad += [f"{b['id']}: created_by {b.get('created_by')!r} (`bd q` leaves it empty; use `bd create`)" for b in beads if b.get("created_by") != WRITER_ACTOR]
+    return bad
 
 
 # --- running ---------------------------------------------------------------
@@ -303,6 +457,8 @@ def checker_command(trial: Trial, test_dir: Path, ecosystem: str, fixture: Path,
         argv += ["--mirrors", str(trial.mirrors), "--branch", branch]
         if baseline:
             argv.append("--baseline")
+        if trial.base_commit is not None:
+            argv += ["--arc", "--arc-base", trial.base_commit]
     argv += ["-o", str(out)]
     env = _base_env(check_home, trial.bin, None)
     env["PATH"] = f"{trial.bin}:/usr/local/bin:/usr/bin"
@@ -326,7 +482,8 @@ def run_checker(trial: Trial, test: AcceptanceTest, test_dir: Path, branch: str,
     finished = _run_sandboxed(cmd, log, None, CHECKER_TIMEOUT_S)
     try:
         data = json.loads(out.read_text())
-        checks = [CheckResult(c["name"], bool(c["passed"]), c["detail"]) for c in data["checks"]]
+        checks = [CheckResult(c["name"], bool(c["passed"]), c["detail"], c.get("gating", True))
+                  for c in data["checks"]]
     except (OSError, ValueError, KeyError, TypeError) as e:
         why = "checker timed out" if not finished else f"checker produced no result ({type(e).__name__})"
         tail = log.read_text(errors="replace")[-2000:] if log.exists() else ""
@@ -334,15 +491,32 @@ def run_checker(trial: Trial, test: AcceptanceTest, test_dir: Path, branch: str,
     return TrialResult(test=test.name, trial=trial.dir.name, checks=checks, reason=None)
 
 
-def run_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors: Path | None, proxy: Path | None,
-              opencode_argv: list[str] | None = None, *, test_dir: Path | None = None,
-              branch: str = STITCH_BRANCH, baseline: bool = False) -> TrialResult:
-    """Set up the trial, run the agent sandboxed until done or time_limit_s, then check it sandboxed."""
-    trial = prepare_trial(test, index_md, trial_dir, mirrors, proxy)
-    argv = opencode_argv if opencode_argv is not None else opencode_command(test.prompt)
-    transcript, log = trial.dir / "transcript.jsonl", trial.dir / "opencode.log"
-    deadline = time.monotonic() + test.time_limit_s
-    finished = _run_sandboxed(agent_command(trial, argv), transcript, log, test.time_limit_s)
+@dataclass
+class RoadmapOutcome:
+    """A roadmap trial's bead counts (from the final export) and how its build loop went."""
+    beads: int = 0
+    closed: int = 0
+    blocked: int = 0
+    sessions: int = 0        # build-phase sessions: bead, stall, or the brief fallback; not the writing session
+    stall_sessions: int = 0
+    roadmap_failed: bool = False  # ornith wrote no beads; the build was one session with the brief
+    loop_stalled: bool = False    # STALL_RUN quick sessions in a row with no bead status change
+    bd_error: str | None = None   # host-side bd failed (say the agent broke .beads); the loop stopped there
+
+
+@dataclass
+class SessionRun:
+    """One agent session, resumed in place after dropped model connections."""
+    finished: bool               # False: killed at its time limit
+    resumes: int = 0
+    drop: tuple[str | None, str] | None = None  # (session id, message) if still dropped after the last resume
+
+
+def run_session(trial: Trial, argv: list[str], transcript: Path, log: Path, limit: float) -> SessionRun:
+    """Run `argv` sandboxed for at most `limit` seconds; on a dropped model connection, resume the same
+    session (appending to transcript and log) up to MAX_RESUMES times while time allows."""
+    deadline = time.monotonic() + limit
+    finished = _run_sandboxed(agent_command(trial, argv), transcript, log, limit)
     drop = _model_drop(transcript, 0, log, 0) if finished else None
     resumes = 0
     while drop and resumes < MAX_RESUMES and deadline - time.monotonic() > RESUME_PAUSE_S + 60:
@@ -353,13 +527,191 @@ def run_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors: Pat
         finished = _run_sandboxed(agent_command(trial, resume_command(argv, session)), transcript, log,
                                   max(1.0, deadline - time.monotonic()), append=True)
         drop = _model_drop(transcript, at, log, log_at) if finished else None
+    return SessionRun(finished, resumes, drop)
+
+
+class _Sessions:
+    """Fresh agent sessions in one trial, all against one deadline. Session n writes transcript-<n>.jsonl."""
+
+    def __init__(self, trial: Trial, opencode_argv: list[str] | None, time_limit_s: float):
+        self.trial, self.argv = trial, opencode_argv
+        self.deadline = time.monotonic() + time_limit_s
+        self.n = 0
+        self.killed_at_deadline = False  # the last session's fate: the timeout rule reads only this
+        self.resumes = 0  # over all sessions
+        self.dropped: SessionRun | None = None  # a session still dropped after its resumes; no more run
+
+    def remaining(self) -> float:
+        return self.deadline - time.monotonic()
+
+    def run(self, prompt: str, cap: float | None = None) -> float:
+        """Run one session (limit: the time left, or `cap` if smaller); return its duration."""
+        self.n += 1
+        left = self.remaining()
+        limit = left if cap is None else min(cap, left)
+        argv = self.argv + [prompt] if self.argv is not None else opencode_command(prompt)
+        start = time.monotonic()
+        run = run_session(self.trial, argv, self.trial.dir / f"transcript-{self.n}.jsonl",
+                          self.trial.dir / f"opencode-{self.n}.log", max(limit, 0))
+        self.resumes += run.resumes
+        if run.drop:
+            self.dropped = run
+        self.killed_at_deadline = not run.finished and limit == left
+        return time.monotonic() - start
+
+    def usable(self) -> bool:
+        """Time is left and no session has ended on a connection that resuming could not restore."""
+        return self.remaining() > 0 and self.dropped is None
+
+
+def _bd_json(trial: Trial, *args: str):
+    r = bd_run(trial.project, trial.env, *args, "--json")
+    if r.returncode != 0:
+        raise RuntimeError(f"bd {' '.join(args)} failed ({r.returncode}): {r.stderr.strip() or r.stdout.strip()}")
+    return json.loads(r.stdout or "null") or []
+
+
+def _bd_ok(trial: Trial, *args: str) -> None:
+    r = bd_run(trial.project, trial.env, *args)
+    if r.returncode != 0:
+        raise RuntimeError(f"bd {' '.join(args[:2])} failed ({r.returncode}): {r.stderr.strip() or r.stdout.strip()}")
+
+
+def _bead_states(trial: Trial) -> dict[str, str]:
+    return {b["id"]: b["status"] for b in _bd_json(trial, "list", "--all", "--limit", "0")}
+
+
+def _export(trial: Trial, dest: Path) -> list[dict]:
+    _bd_ok(trial, "export", "-o", str(dest))
+    return [json.loads(line) for line in dest.read_text().splitlines() if line.strip()]
+
+
+def _writing_phase(trial: Trial, test: AcceptanceTest, sessions: _Sessions) -> int:
+    """One ornith session writes the roadmap from BRIEF.md; return how many beads it created.
+
+    BRIEF.md is removed afterwards: bead sessions never see the brief, as in frontier."""
+    brief = trial.project / "BRIEF.md"
+    brief.write_text(test.prompt)
+    with open(trial.project / ".git" / "info" / "exclude", "a") as f:
+        f.write("\nBRIEF.md\n")
+    try:
+        sessions.run(test.roadmap_prompt, WRITING_LIMIT_S)
+    finally:
+        brief.unlink(missing_ok=True)
+    try:
+        return len(_export(trial, trial.dir / "roadmap.jsonl"))
+    except (RuntimeError, ValueError, OSError):  # unreadable beads are no roadmap: the brief fallback applies
+        return 0
+
+
+def bead_loop(trial: Trial, sessions: _Sessions, out: RoadmapOutcome) -> None:
+    """Work beads one fresh session at a time until all are closed, time is up, or sessions stall.
+
+    Ready beads get a bead session, and a second if the first leaves them unclosed; then they are
+    set blocked with a note. With nothing ready but beads unfinished, a stall session works them
+    regardless of dependencies, and the loop goes back to `bd ready`, so no time is left unused."""
+    failures: dict[str, int] = {}
+    retry = None
+    quick = 0
+    while sessions.usable():
+        before = _bead_states(trial)
+        for bid in [b for b, st in before.items() if st == "in_progress"]:  # claimed by a finished session
+            _bd_ok(trial, "update", bid, "--status", "open")
+            before[bid] = "open"
+        ready = [b["id"] for b in _bd_json(trial, "ready", "--limit", "0")]
+        if ready:
+            bead = retry if retry in ready else ready[0]
+            prompt = BEAD_PROMPT.format(id=bead)
+        elif any(st in ("open", "in_progress", "blocked") for st in before.values()):
+            bead, prompt = None, STALL_PROMPT
+        else:
+            return  # every bead is closed
+        if sessions.remaining() <= 0:
+            return  # bd bookkeeping used the last of the time; no zero-length session
+        out.sessions += 1
+        out.stall_sessions += bead is None
+        took = sessions.run(prompt)
+        after = _bead_states(trial)
+        quick = quick + 1 if took < QUICK_SESSION_S and after == before else 0
+        retry = None
+        if bead is not None and after.get(bead) != "closed" and not sessions.killed_at_deadline:
+            failures[bead] = failures.get(bead, 0) + 1
+            if failures[bead] >= 2:
+                _bd_ok(trial, "update", bead, "--status", "blocked")
+                _bd_ok(trial, "note", bead, f"harness: not closed after {failures[bead]} bead sessions; set blocked.")
+            else:
+                retry = bead
+        if quick >= STALL_RUN:
+            out.loop_stalled = True
+            return
+
+
+@dataclass
+class AgentRun:
+    timed_out: bool
+    outcome: RoadmapOutcome | None  # roadmap trials only
+    resumes: int = 0                # over all sessions
+    dropped: SessionRun | None = None  # the session whose connection stayed dropped, if any
+
+
+def run_agent(trial: Trial, test: AcceptanceTest, opencode_argv: list[str] | None,
+              roadmap: str = "none") -> AgentRun:
+    """Run the trial's agent session(s) within test.time_limit_s.
+
+    none: one session with the brief, into transcript.jsonl (`opencode_argv` runs as given).
+    frontier/ornith: ornith first writes the roadmap; then the bead loop. Timed out means the last
+    session was killed at the deadline. Every session is resumed after a dropped model connection;
+    a bead trial runs no further session once one stays dropped."""
+    if roadmap == "none":
+        argv = opencode_argv if opencode_argv is not None else opencode_command(test.prompt)
+        run = run_session(trial, argv, trial.dir / "transcript.jsonl", trial.dir / "opencode.log",
+                          test.time_limit_s)
+        return AgentRun(not run.finished, None, run.resumes, run if run.drop else None)
+    sessions = _Sessions(trial, opencode_argv, test.time_limit_s)
+    out = RoadmapOutcome()
+    try:
+        if roadmap == "ornith" and _writing_phase(trial, test, sessions) == 0:
+            out.roadmap_failed = True
+            if sessions.usable():
+                out.sessions += 1
+                sessions.run(test.prompt)
+        else:
+            bead_loop(trial, sessions, out)
+        final = _export(trial, trial.dir / "beads-final.jsonl")
+    except (RuntimeError, ValueError, OSError) as e:
+        out.bd_error = str(e)
+        final = []
+    out.beads = len(final)
+    out.closed = sum(b.get("status") == "closed" for b in final)
+    out.blocked = sum(b.get("status") == "blocked" for b in final)
+    return AgentRun(sessions.killed_at_deadline, out, sessions.resumes, sessions.dropped)
+
+
+def trial_denials(trial_dir: Path) -> int:
+    """arc denials over every session's transcript."""
+    return sum(count_denials(t) for t in sorted(Path(trial_dir).glob("transcript*.jsonl")))
+
+
+def run_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors: Path | None, proxy: Path | None,
+              opencode_argv: list[str] | None = None, *, test_dir: Path | None = None,
+              branch: str = STITCH_BRANCH, baseline: bool = False, cli: Path | None = None,
+              arc: Path | None = None, roadmap: str = "none") -> TrialResult:
+    """Set up the trial, run the agent sandboxed until done or time_limit_s, then check it sandboxed."""
+    trial = prepare_trial(test, index_md, trial_dir, mirrors, proxy, cli, arc, roadmap=roadmap)
+    run = run_agent(trial, test, opencode_argv, roadmap)
     test_dir = Path(test_dir) if test_dir is not None else REPO / "tests" / "acceptance" / test.name
     result = run_checker(trial, test, test_dir, branch, baseline)
-    result.resumes = resumes
-    if drop:
-        result.reason = f"{INFRA_PREFIX}model connection dropped after {resumes} resumes: {drop[1]}"
-    elif not finished:
+    result.resumes = run.resumes
+    if run.dropped:
+        result.reason = (f"{INFRA_PREFIX}model connection dropped after {run.dropped.resumes} resumes: "
+                         f"{run.dropped.drop[1]}")
+    elif run.timed_out:
         result.reason = "timeout"
+    if run.outcome is not None:
+        result.roadmap = asdict(run.outcome)
+    if arc is not None:
+        result.arc_denials = trial_denials(trial.dir)
+        result.arc_hook_live = arc_hook_live(trial.project)
     (trial.dir / "checker.json").write_text(result.to_json())
     return result
 
@@ -409,34 +761,54 @@ def _model_drop(transcript: Path, at: int, log: Path, log_at: int) -> tuple[str 
 
 # --- rounds ----------------------------------------------------------------
 
-def _godot_descriptors(mirrors: Path, modules: list[str], branch: str) -> list:
-    descriptors = []
-    with tempfile.TemporaryDirectory(prefix="artifactory-descriptors-") as tmp:
-        for name in modules:
-            mirror = mirrors / f"{name}.git"
-            if not mirror.is_dir():
-                raise RuntimeError(f"no mirror at {mirror}; run `artifactory mirror` first")
-            r = subprocess.run(["git", "show", f"{branch}:module.yaml"], cwd=mirror, capture_output=True, text=True)
-            if r.returncode != 0:
-                raise RuntimeError(f"{name}: no module.yaml on {branch}: {r.stderr.strip()}")
-            d = Path(tmp) / name
-            d.mkdir()
-            (d / "module.yaml").write_text(r.stdout)
-            try:
-                descriptors.append(load_descriptor(d))
-            except DescriptorError as e:
-                raise RuntimeError(f"{name}: invalid module.yaml on {branch}: {'; '.join(e.problems)}") from e
-    return descriptors
+def build_cli(out: Path) -> Path:
+    """Build the Go `artifactory` CLI into <out>/bin/artifactory and return its path."""
+    binary = Path(out) / "bin" / "artifactory"
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    r = subprocess.run(["go", "build", "-o", str(binary), "./cmd/artifactory"], cwd=REPO,
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"go build failed: {r.stderr.strip()}")
+    return binary
 
 
-def _go_descriptors(modules: list[str]) -> list:
-    descriptors = []
-    for name in modules:
-        try:
-            descriptors.append(load_descriptor(GO_SAMPLES / name))
-        except DescriptorError as e:
-            raise RuntimeError(f"{name}: {'; '.join(e.problems)}") from e
-    return descriptors
+def build_arc(out: Path, src: Path | None = None) -> Path:
+    """Build `arc` from its source tree (default $ARC_SRC, else the main checkout) into <out>/bin/arc."""
+    src = Path(src or os.environ.get("ARC_SRC") or DEFAULT_ARC_SRC)
+    binary = Path(out) / "bin" / "arc"
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    r = subprocess.run(["go", "build", "-o", str(binary), "./cmd/arc"], cwd=src, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"arc build failed in {src}: {r.stderr.strip()}")
+    return binary
+
+
+def arc_hook_live(project: Path) -> bool:
+    """Whether arc's hook ran in the trial: it keeps per-session state in .arch/cache/hook-<session>.json
+    (arc SPEC, "arc hook"), and only a hook that loaded and ran under the agent writes it."""
+    return any((Path(project) / ".arch" / "cache").glob("hook-*.json"))
+
+
+def count_denials(transcript: Path) -> int:
+    """How often arc refused a write: its deny reason as the model saw it in the opencode stdout."""
+    # Deliberately a plain substring count over the raw transcript, not a parse of tool events:
+    # it also counts the phrase if the model quotes it in its own text. Good enough as a tally.
+    try:
+        return Path(transcript).read_text(errors="replace").count(DENIAL_MARK)
+    except OSError:
+        return 0
+
+
+def render_index(cli: Path, ecosystem: str, provider: str, modules: list[str]) -> str:
+    """The MODULES.md that `artifactory index --modules-only` renders for these modules."""
+    config = {"ecosystem": ecosystem, "provider": provider, "modules": [{"name": m} for m in modules]}
+    with tempfile.TemporaryDirectory(prefix="artifactory-index-") as tmp:
+        (Path(tmp) / "artifactory.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
+        r = subprocess.run([str(cli), "index", "--project", tmp, "--modules-only"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"artifactory index failed ({r.returncode}): {r.stderr.strip() or r.stdout.strip()}")
+        return (Path(tmp) / "MODULES.md").read_text()
 
 
 def _go_sample_dirs() -> list[Path]:
@@ -444,11 +816,26 @@ def _go_sample_dirs() -> list[Path]:
 
 
 def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = False, *,
-              results_root: Path | None = None, opencode_argv: list[str] | None = None) -> RoundResult:
+              results_root: Path | None = None, opencode_argv: list[str] | None = None,
+              product: bool = False, arc: bool = False, arc_src: Path | None = None,
+              roadmap: str = "none") -> RoundResult:
     test_dir = Path(test_dir).resolve()
     test = load_acceptance(test_dir)
     root = Path(results_root or RESULTS).resolve()
-    mirrors = proxy = None
+    mirrors = proxy = cli = arc_bin = None
+    if roadmap not in ROADMAPS:
+        raise ValueError(f"--roadmap must be one of {', '.join(ROADMAPS)}")
+    if roadmap != "none":
+        if not (product and arc):
+            raise ValueError(f"--roadmap {roadmap} needs --product and --arc")
+        if roadmap == "ornith" and not test.roadmap_prompt:
+            raise ValueError(f"--roadmap ornith needs roadmap_prompt in {test_dir / 'test.yaml'}")
+        if roadmap == "frontier" and not (test_dir / "roadmaps" / "frontier.jsonl").is_file():
+            raise ValueError(f"--roadmap frontier needs {test_dir / 'roadmaps' / 'frontier.jsonl'}")
+    if arc and not product:
+        raise ValueError("--arc needs --product")
+    if product and (baseline or test.ecosystem == "go"):
+        raise ValueError("--product is defined for non-baseline Godot rounds only")
     branch = BASELINE_BRANCH if baseline else STITCH_BRANCH
     if test.ecosystem == "go":
         if baseline:
@@ -457,7 +844,7 @@ def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = F
         missing = [m for m in test.modules if m not in sample_names]
         if missing:
             raise RuntimeError(f"no Go sample module for: {', '.join(missing)}")
-        index_md = build_index(_go_descriptors(sorted(sample_names)), index_preamble("go"))
+        index_md = render_index(build_cli(root), "go", f"dir:{GO_SAMPLES}", sorted(sample_names))
         proxy = root / "goproxy"
         if proxy.exists():
             shutil.rmtree(proxy)
@@ -469,19 +856,31 @@ def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = F
                 raise RuntimeError(f"no mirror at {mirrors / (name + '.git')}; run `artifactory mirror` first")
         if baseline:
             index_md = BASELINE_README.read_text()
+        elif product:
+            cli = build_cli(root)
+            arc_bin = build_arc(root, arc_src) if arc else None
+            index_md = ""  # the CLI renders MODULES.md in each trial
         else:
-            index_md = build_index(_godot_descriptors(mirrors, test.modules, branch), index_preamble(test.ecosystem))
+            index_md = render_index(build_cli(root), test.ecosystem, f"dir:{mirrors}", test.modules)
 
-    out = root / test.name / ("baseline" if baseline else f"round-{round_no}")
+    out = round_dir(root, test.name, round_no, baseline, roadmap)
     out.mkdir(parents=True, exist_ok=True)
-    result = RoundResult(test.name, round_no)
+    result = RoundResult(test.name, round_no, product=product, arc=arc, roadmap=roadmap)
     for k in range(1, trials + 1):
         tr = run_trial(test, index_md, out / f"trial-{k}", mirrors, proxy, opencode_argv,
-                       test_dir=test_dir, branch=branch, baseline=baseline)
+                       test_dir=test_dir, branch=branch, baseline=baseline, cli=cli, arc=arc_bin,
+                       roadmap=roadmap)
         result.results.append(tr)
         (out / "round.json").write_text(result.to_json())
     (out / "round.json").write_text(result.to_json())
     return result
+
+
+def round_dir(root: Path, test: str, round_no: int, baseline: bool, roadmap: str = "none") -> Path:
+    """round-<N> for none (as before), round-<N>-<roadmap> for the bead conditions."""
+    if baseline:
+        return Path(root) / test / "baseline"
+    return Path(root) / test / (f"round-{round_no}" if roadmap == "none" else f"round-{round_no}-{roadmap}")
 
 
 def refresh_mirrors(root: Path | None = None) -> list[Path]:

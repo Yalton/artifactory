@@ -1,0 +1,21 @@
+name: InputRemapKit
+ecosystem: godot-csharp
+version: 0.1.0
+summary: "Rebind keyboard and mouse actions at runtime, with conflict checks and saved overrides."
+replaces:
+  - "a key-rebinding screen backend over InputMap"
+  - "saving and loading custom key bindings"
+  - "key conflict detection"
+  - "tracking keyboard vs gamepad as the last-used device"
+install: "git submodule add git@repo.billbert.co:artifactory/InputRemapKit.git addons/InputRemapKit"
+setup:
+  - "project.godot [autoload]: InputRemapManager=\"*res://addons/InputRemapKit/InputRemapManager.cs\""
+entry:
+  - "InputRemapManager.Instance"
+  - "InputRemapManager.RemapAction"
+  - "InputRemapManager.GetConflictingAction"
+  - "InputDeviceTracker.Instance"
+liveness: "[InputRemapKit] live"
+docs: README.md
+example: README.md#wiring
+test: "godot --headless --path ../InputRemapKit.demo -- --smoke"

@@ -6,6 +6,7 @@ probe is added and the project is built and run.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -13,8 +14,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import yaml
+
 from artifactory.acceptance import AcceptanceTest
-from artifactory.descriptor import DescriptorError, load_descriptor
 from artifactory.checks.process import ANSI, Proc
 from artifactory.checks.process import run as run_process
 from artifactory.result import CheckResult, TrialResult
@@ -27,6 +29,9 @@ PROBE_SRC = Path(__file__).resolve().parent.parent / "godot_probe" / "CheckerPro
 PROBE_DIR = "artifactory_probe"
 PROBE_AUTOLOAD = f'ArtifactoryCheckerProbe="*res://{PROBE_DIR}/CheckerProbe.cs"'
 
+PROBE_MODE_ENV = "ARTIFACTORY_PROBE_MODE"
+LANTERN_ROOMS = ("courtyard", "hall", "tower")
+
 ERROR_LINE = re.compile(r"ERROR:|Unhandled exception")
 ROOT_SKIP_DIRS = {".godot", "bin", "obj"}  # generated output, only at the project root
 MAX_LISTED = 10
@@ -38,7 +43,7 @@ _Proc = Proc
 
 
 def check_godot(project: Path, test: AcceptanceTest, mirrors: Path, branch: str,
-                baseline: bool = False) -> TrialResult:
+                baseline: bool = False, arc_base: str | None = None) -> TrialResult:
     project = Path(project).resolve()
     mirrors = Path(mirrors).resolve()
     with tempfile.TemporaryDirectory(prefix="artifactory-godot-") as tmp:
@@ -48,19 +53,20 @@ def check_godot(project: Path, test: AcceptanceTest, mirrors: Path, branch: str,
         installed, installed_check = _check_installed(copy, test.modules)
         unmodified = _check_unmodified(copy, test.modules, installed, mirrors, branch)
         duplication = _check_duplication(copy, test, mirrors)
+        arc_gate = _check_arc_gate(copy, arc_base) if arc_base else None
 
-        build, run = _build_and_run(copy, Path(tmp) / "logs")
+        lantern = test.probe == "lantern"
+        title = _check_title_scene(copy) if lantern else None
+
+        build, run = _build_and_run(copy, Path(tmp) / "logs", probe_mode="lantern" if lantern else None)
+        probes = ["player_moves", "player_visible"] + (["rooms", "dialogue"] if lantern else ["room_present"])
         if run is None:
             runs = CheckResult("runs", False, "not run: build failed")
-            moves = CheckResult("player_moves", False, "not run: build failed")
-            visible = CheckResult("player_visible", False, "not run: build failed")
-            room = CheckResult("room_present", False, "not run: build failed")
+            probed = [CheckResult(name, False, "not run: build failed") for name in probes]
             output = ""
         else:
             runs = _check_runs(run, copy, _blank_errors(test.fixture))
-            moves = _check_probe(run, "player_moves")
-            visible = _check_probe(run, "player_visible")
-            room = _check_probe(run, "room_present")
+            probed = [_check_probe(run, name) for name in probes]
             output = run.output
         live = _check_live(copy, test.modules, output)
 
@@ -70,11 +76,52 @@ def check_godot(project: Path, test: AcceptanceTest, mirrors: Path, branch: str,
         unmodified = CheckResult("modules_unmodified", False,
                                  f"manual: judge kit edits from the tree (automatic: {unmodified.detail})")
 
-    checks = [build, runs, moves, visible, room, installed_check, live, unmodified, duplication]
+    if lantern:
+        moves, visible, *lantern_probes = probed
+        checks = [build, runs, moves, visible, installed_check, live, unmodified, duplication, *lantern_probes]
+    else:
+        moves, visible, room = probed
+        checks = [build, runs, moves, visible, room, installed_check, live, unmodified, duplication]
+    if title is not None:
+        checks.append(title)
+    if arc_gate is not None:
+        checks.append(arc_gate)
     return TrialResult(test=test.name, trial=project.name, checks=checks, reason=None)
 
 
 # --- static checks ---------------------------------------------------------
+
+ARC_GATE_TIMEOUT_S = 120
+
+
+def _check_arc_gate(project: Path, base: str) -> CheckResult:
+    """`arc gate --base <fixture commit> --json` with the trial's arc. Informational: never gates `passed`.
+
+    --base, not --all: --all has no change set and skips the vendored changed-file check."""
+    # --base sees committed history only and the model's work is usually uncommitted:
+    # commit it in this disposable copy first (the real trial project is never touched).
+    for argv in (["add", "-A"],
+                 ["-c", "user.name=Artifactory Checker", "-c", "user.email=checker@artifactory.invalid",
+                  "-c", "commit.gpgsign=false", "commit", "--allow-empty", "--no-verify", "-qm", "checker snapshot"]):
+        c = _git(*argv, cwd=project)
+        if c.returncode != 0:
+            return CheckResult("arc_gate", False, f"could not snapshot the project: {c.stderr.strip()[-300:]}",
+                               gating=False)
+    try:
+        r = subprocess.run(["arc", "gate", "--base", base, "--json"], cwd=project, capture_output=True,
+                           text=True, timeout=ARC_GATE_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return CheckResult("arc_gate", False, f"arc gate did not run: {type(e).__name__}", gating=False)
+    try:
+        rep = json.loads(r.stdout)
+        errors, warnings, findings = int(rep["errors"]), int(rep["warnings"]), rep.get("findings") or []
+    except (ValueError, KeyError, TypeError):
+        return CheckResult("arc_gate", False, f"arc gate exit {r.returncode}: {(r.stderr or r.stdout).strip()[-500:]}",
+                           gating=False)
+    detail = f"{errors} error(s), {warnings} warning(s)"
+    if findings:
+        detail += ": " + json.dumps(findings, separators=(",", ":"))[:2000]
+    return CheckResult("arc_gate", errors == 0, detail, gating=False)
 
 def _git(*args: str, cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
@@ -191,6 +238,7 @@ def _project_code_files(project: Path, excluded: set[str]):
 
 def _env() -> dict[str, str]:
     env = dict(os.environ)
+    env.pop(PROBE_MODE_ENV, None)  # set per run, only on a trial copy's godot run
     # Headless Godot still pops a zenity dialog for some errors when a display is set.
     env.pop("DISPLAY", None)
     env.pop("WAYLAND_DISPLAY", None)
@@ -199,8 +247,8 @@ def _env() -> dict[str, str]:
     return env
 
 
-def _run(cmd: list[str], cwd: Path, timeout: float, log: Path) -> _Proc:
-    return run_process(cmd, cwd, timeout, log, env=_env())
+def _run(cmd: list[str], cwd: Path, timeout: float, log: Path, extra_env: dict[str, str] | None = None) -> _Proc:
+    return run_process(cmd, cwd, timeout, log, env={**_env(), **(extra_env or {})})
 
 
 def _project_setting(project: Path, section: str, key: str) -> str | None:
@@ -239,8 +287,10 @@ def _tail(text: str, n: int = 8) -> str:
     return " | ".join(lines[-n:])
 
 
-def _build_and_run(project: Path, logs: Path) -> tuple[CheckResult, _Proc | None]:
-    """Build the copy with the probe compiled in, import, then run it headless."""
+def _build_and_run(project: Path, logs: Path, probe_mode: str | None = None) -> tuple[CheckResult, _Proc | None]:
+    """Build the copy with the probe compiled in, import, then run it headless.
+
+    `probe_mode` (e.g. "lantern") reaches the probe through ARTIFACTORY_PROBE_MODE on the run only."""
     if not (project / "project.godot").is_file():
         return CheckResult("build", False, "no project.godot"), None
     csproj = _find_csproj(project)
@@ -263,7 +313,8 @@ def _build_and_run(project: Path, logs: Path) -> tuple[CheckResult, _Proc | None
                logs / "import.log")
     if imp.timed_out:
         return build, _Proc(None, f"godot --import timed out after {IMPORT_TIMEOUT_S}s\n" + imp.output, imp.seconds)
-    run = _run(["godot", "--headless", "--path", str(project)], project, RUN_TIMEOUT_S, logs / "run.log")
+    run = _run(["godot", "--headless", "--path", str(project)], project, RUN_TIMEOUT_S, logs / "run.log",
+               extra_env={PROBE_MODE_ENV: probe_mode} if probe_mode else None)
     return build, run
 
 
@@ -325,17 +376,48 @@ def _check_probe(run: _Proc, name: str) -> CheckResult:
     """The probe's last `PROBE <name>=...` line decides the check."""
     probe = [l.strip() for l in run.output.splitlines() if l.strip().startswith(f"PROBE {name}=")]
     if not probe:
+        errors = [l.strip() for l in run.output.splitlines() if l.strip().startswith("PROBE lantern_error=")]
+        if errors:
+            return CheckResult(name, False, f"probe never reported: {errors[-1]}")
         return CheckResult(name, False, "probe never reported (game did not run to 3 s)")
     line = probe[-1]
     return CheckResult(name, f"{name}=true" in line.split(), line)
 
 
+GD_SCENE_UID = re.compile(r'^\[gd_scene\b[^\]]*\buid="([^"]+)"')
+
+
+def _check_title_scene(project: Path) -> CheckResult:
+    """Informational: the game starts on something other than a room (a title screen)."""
+    main = _project_setting(project, "application", "run/main_scene") if (project / "project.godot").is_file() else None
+    if not main:
+        return CheckResult("title_scene", False, "no run/main_scene", gating=False)
+    resolved = main
+    if main.startswith("uid://"):
+        for name in LANTERN_ROOMS:
+            try:
+                header = (project / "rooms" / f"{name}.tscn").read_text(errors="replace").split("\n", 1)[0]
+            except OSError:
+                continue
+            m = GD_SCENE_UID.match(header)
+            if m and m.group(1) == main:
+                resolved = f"res://rooms/{name}.tscn"
+    rooms = {f"res://rooms/{name}.tscn" for name in LANTERN_ROOMS}
+    shown = main if resolved == main else f"{main} ({resolved})"
+    if resolved in rooms:
+        return CheckResult("title_scene", False, f"main scene {shown} is a room", gating=False)
+    return CheckResult("title_scene", True, f"main scene {shown} is not a room", gating=False)
+
+
 def _marker(project: Path, name: str) -> str:
-    """The kit's liveness marker: its descriptor's `liveness`, else the profile default."""
+    """The kit's liveness marker: `liveness` in its module.yaml, else the profile default."""
+    default = f"[{name}] live"
     try:
-        return load_descriptor(project / "addons" / name).liveness
-    except DescriptorError:
-        return f"[{name}] live"
+        data = yaml.safe_load((project / "addons" / name / "module.yaml").read_text())
+    except (OSError, yaml.YAMLError):
+        return default
+    liveness = data.get("liveness") if isinstance(data, dict) else None
+    return liveness if isinstance(liveness, str) and liveness else default
 
 
 def _check_live(project: Path, modules: list[str], output: str) -> CheckResult:

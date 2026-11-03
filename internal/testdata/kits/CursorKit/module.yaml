@@ -1,0 +1,18 @@
+name: CursorKit
+ecosystem: godot-csharp
+version: 0.1.0
+summary: "Push/pop stack that owns the mouse cursor mode so overlapping UI layers never fight."
+replaces:
+  - "a stack of mouse-mode owners for menus and overlays"
+  - "setting Input.MouseMode directly from several scripts"
+install: "git submodule add git@repo.billbert.co:artifactory/CursorKit.git addons/CursorKit"
+setup:
+  - "project.godot [autoload]: InputModeManager=\"*res://addons/CursorKit/InputModeManager.cs\""
+entry:
+  - "InputModeManager.Instance"
+  - "InputModeManager.Push"
+  - "InputModeManager.Pop"
+liveness: "[CursorKit] live"
+docs: README.md
+example: README.md#wiring
+test: "godot --headless --path ../CursorKit.demo -- --smoke"

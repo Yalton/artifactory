@@ -1,0 +1,217 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+const validYAML = `name: kvstore
+ecosystem: go
+version: 0.1.0
+summary: A store.
+replaces: [storing data]
+install: go get repo.billbert.co/artifactory/kvstore
+setup: []
+entry: [kvstore.Open]
+liveness: go list -deps
+docs: README.md
+example: README.md
+test: go test ./...
+`
+
+func mod(t *testing.T, yaml string) string {
+	t.Helper()
+	dir := t.TempDir()
+	files := map[string]string{
+		"module.yaml": yaml, "README.md": "x",
+		"go.mod": "module repo.billbert.co/artifactory/kvstore\n",
+	}
+	for n, b := range files {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte(b), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func TestRunValidateExitCodes(t *testing.T) {
+	good := mod(t, validYAML)
+	bad := mod(t, strings.Replace(validYAML, "ecosystem: go", "ecosystem: rust", 1))
+	twoPart := mod(t, strings.Replace(validYAML, "version: 0.1.0", "version: 1.0", 1))
+	tests := []struct {
+		name string
+		args []string
+		want int
+	}{
+		{"valid", []string{"validate", good}, 0},
+		{"invalid", []string{"validate", bad}, 1},
+		{"one bad of two", []string{"validate", good, bad}, 1},
+		{"two-part version", []string{"validate", twoPart}, 1},
+		{"unknown command", []string{"frobnicate"}, 2},
+		{"no args", nil, 2},
+		{"help", []string{"help"}, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out, errb bytes.Buffer
+			if got := run(tt.args, &out, &errb); got != tt.want {
+				t.Errorf("exit = %d, want %d (stdout %q stderr %q)", got, tt.want, out.String(), errb.String())
+			}
+		})
+	}
+}
+
+func TestRunValidateOutput(t *testing.T) {
+	bad := mod(t, strings.Replace(validYAML, "ecosystem: go", "ecosystem: rust", 1))
+	var out, errb bytes.Buffer
+	run([]string{"validate", bad}, &out, &errb)
+	if want := bad + ": ecosystem: must be one of godot-csharp, go\n"; !strings.Contains(out.String()+errb.String(), want) {
+		t.Errorf("output %q %q lacks %q", out.String(), errb.String(), want)
+	}
+}
+
+func TestRunValidateJSON(t *testing.T) {
+	good := mod(t, validYAML)
+	var out, errb bytes.Buffer
+	if code := run([]string{"validate", "--json", good}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	var got struct {
+		Modules []struct {
+			Dir        string         `json:"dir"`
+			Descriptor map[string]any `json:"descriptor"`
+			Problems   []string       `json:"problems"`
+		} `json:"modules"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("%v: %s", err, out.String())
+	}
+	if len(got.Modules) != 1 || got.Modules[0].Dir != good || got.Modules[0].Descriptor["name"] != "kvstore" || len(got.Modules[0].Problems) != 0 {
+		t.Errorf("got %+v", got)
+	}
+}
+
+func TestRunShowUnknownModule(t *testing.T) {
+	var so, se bytes.Buffer
+	code := run([]string{"show", "nope", "--provider", "dir:../../samples/go"}, &so, &se)
+	if code != 1 || !strings.Contains(se.String(), "no module named nope") {
+		t.Errorf("code=%d stderr=%q", code, se.String())
+	}
+}
+
+func TestRunCatalogSamples(t *testing.T) {
+	var so, se bytes.Buffer
+	code := run([]string{"catalog", "--provider", "dir:../../samples/go"}, &so, &se)
+	lines := strings.Split(strings.TrimSpace(so.String()), "\n")
+	if code != 0 || len(lines) != 4 {
+		t.Errorf("code=%d out=%q err=%q", code, so.String(), se.String())
+	}
+}
+
+func TestRunCatalogNoProvider(t *testing.T) {
+	var so, se bytes.Buffer
+	code := run([]string{"catalog"}, &so, &se)
+	if code != 2 || !strings.Contains(se.String(), "no provider: pass --provider or run artifactory init") {
+		t.Errorf("code=%d err=%q", code, se.String())
+	}
+}
+
+func TestRunShowSample(t *testing.T) {
+	var so, se bytes.Buffer
+	code := run([]string{"show", "kvstore", "--provider", "dir:../../samples/go"}, &so, &se)
+	if code != 0 || !strings.Contains(so.String(), "kvstore") || !strings.Contains(so.String(), "v0.1.0") {
+		t.Errorf("code=%d out=%q err=%q", code, so.String(), se.String())
+	}
+}
+
+func TestExtractRefreshFlag(t *testing.T) {
+	got, found := extractFlag([]string{"catalog", "--refresh", "--provider", "x", "--", "--refresh"}, "refresh")
+	if !found || strings.Join(got, " ") != "catalog --provider x -- --refresh" {
+		t.Errorf("got %v, %v", got, found)
+	}
+}
+
+func TestValidateProviderReportsPublishedTag(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "kvstore.git")
+	for _, a := range [][]string{{"init", "--bare", "-q", repo}} {
+		if b, err := exec.Command("git", a...).CombinedOutput(); err != nil {
+			t.Fatal(err, string(b))
+		}
+	}
+	// A bare repo with a v0.1.0 tag: build it from a scratch work tree.
+	work := t.TempDir()
+	env := append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+	for _, a := range [][]string{{"init", "-q"}, {"commit", "-q", "--allow-empty", "-m", "x"}, {"tag", "v0.1.0"}, {"push", "-q", repo, "--tags"}} {
+		c := exec.Command("git", a...)
+		c.Dir, c.Env = work, env
+		if b, err := c.CombinedOutput(); err != nil {
+			t.Fatal(err, string(b))
+		}
+	}
+	good := mod(t, validYAML)
+	var out, errb bytes.Buffer
+	if code := run([]string{"validate", good, "--provider", "dir:" + root}, &out, &errb); code != 1 || !strings.Contains(errb.String()+out.String(), "v0.1.0 already published") {
+		t.Errorf("code=%d out=%q err=%q", code, out.String(), errb.String())
+	}
+	out.Reset()
+	if code := run([]string{"validate", good}, &out, &errb); code != 0 {
+		t.Errorf("offline validate code=%d", code)
+	}
+	if want := good + ": ok\n" + good + ": tag check skipped: no provider\n"; out.String() != want {
+		t.Errorf("offline validate out=%q, want %q", out.String(), want)
+	}
+	out.Reset()
+	run([]string{"validate", "--json", good}, &out, &errb)
+	var v struct {
+		Modules []struct {
+			TagCheck string `json:"tag_check"`
+		} `json:"modules"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &v); err != nil || len(v.Modules) != 1 || v.Modules[0].TagCheck != "skipped" {
+		t.Errorf("json=%q err=%v", out.String(), err)
+	}
+	// The provider in DIR/artifactory.yaml is used when no flag is given.
+	os.WriteFile(filepath.Join(good, "artifactory.yaml"), []byte("ecosystem: go\nprovider: dir:"+root+"\n"), 0o644)
+	out.Reset()
+	if code := run([]string{"validate", good}, &out, &errb); code != 1 || !strings.Contains(out.String(), "v0.1.0 already published") {
+		t.Errorf("artifactory.yaml provider: code=%d out=%q", code, out.String())
+	}
+}
+
+func TestPublishCommandJSON(t *testing.T) {
+	dir := mod(t, strings.Replace(validYAML, "test: go test ./...", `test: "false"`, 1))
+	env := append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+	for _, a := range [][]string{{"init", "-q"}, {"add", "-A"}, {"commit", "-qm", "x"}} {
+		c := exec.Command("git", a...)
+		c.Dir, c.Env = dir, env
+		if b, err := c.CombinedOutput(); err != nil {
+			t.Fatal(err, string(b))
+		}
+	}
+	t.Setenv("GIT_AUTHOR_NAME", "t")
+	t.Setenv("GIT_AUTHOR_EMAIL", "t@t")
+	root := t.TempDir()
+	var out, errb bytes.Buffer
+	if code := run([]string{"publish", dir, "--provider", "dir:" + root}, &out, &errb); code != 1 {
+		t.Fatalf("failing test: code=%d err=%q", code, errb.String())
+	}
+	out.Reset()
+	errb.Reset()
+	code := run([]string{"publish", dir, "--provider", "dir:" + root, "--skip-tests", "--json"}, &out, &errb)
+	var got map[string]any
+	if code != 0 || json.Unmarshal(out.Bytes(), &got) != nil || got["tests_skipped"] != true || got["tag"] != "v0.1.0" {
+		t.Fatalf("code=%d out=%q err=%q", code, out.String(), errb.String())
+	}
+	if code := run([]string{"publish", dir, "--provider", "dir:" + root}, &out, &errb); code != 1 {
+		t.Errorf("republish code=%d", code)
+	}
+	if code := run([]string{"publish", dir}, &out, &errb); code != 2 {
+		t.Errorf("no provider code=%d", code)
+	}
+}
