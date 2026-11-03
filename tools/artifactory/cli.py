@@ -48,6 +48,39 @@ def cmd_mirror(args) -> int:
     return 0
 
 
+def cmd_roadmap_workspace(args) -> int:
+    import tempfile
+
+    from .acceptance import load_acceptance
+    from .harness import RESULTS, build_arc, build_cli, prepare_roadmap_workspace
+
+    test = load_acceptance(Path(args.test_dir))
+    mirrors = RESULTS / "mirrors"
+    for name in test.modules:
+        if not (mirrors / f"{name}.git").is_dir():
+            print(f"roadmap-workspace: no mirror at {mirrors / (name + '.git')}; run `artifactory mirror` first",
+                  file=sys.stderr)
+            return 2
+    with tempfile.TemporaryDirectory(prefix="artifactory-build-") as tmp:
+        trial, prefix = prepare_roadmap_workspace(test, Path(args.out_dir), mirrors, build_cli(Path(tmp)),
+                                                  build_arc(Path(tmp), args.arc_src))
+    print(f"project: {trial.project}")
+    print(f"env: {prefix}")
+    return 0
+
+
+def cmd_roadmap_export(args) -> int:
+    from .harness import export_roadmap
+
+    try:
+        n = export_roadmap(Path(args.project), Path(args.output))
+    except RuntimeError as e:
+        print(f"roadmap-export: {e}", file=sys.stderr)
+        return 1
+    print(f"{n} beads exported to {args.output}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="artifactory")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -78,6 +111,15 @@ def main(argv: list[str] | None = None) -> int:
     r.set_defaults(func=cmd_round)
     m = sub.add_parser("mirror", help="refresh bare mirrors of the Godot kits into results/mirrors/")
     m.set_defaults(func=cmd_mirror)
+    w = sub.add_parser("roadmap-workspace", help="prepare the frontier roadmap writer's workspace (no roadmap imported)")
+    w.add_argument("test_dir")
+    w.add_argument("out_dir")
+    w.add_argument("--arc-src", type=Path, help="arc source tree to build (default $ARC_SRC)")
+    w.set_defaults(func=cmd_roadmap_workspace)
+    e = sub.add_parser("roadmap-export", help="export the writer's beads as the frozen roadmap, after checks")
+    e.add_argument("project")
+    e.add_argument("output")
+    e.set_defaults(func=cmd_roadmap_export)
     args = parser.parse_args(argv)
     return args.func(args)
 

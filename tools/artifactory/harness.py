@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -72,6 +73,7 @@ CHECKER_TIMEOUT_S = 3600
 PASS_BAR = 4
 
 ROADMAPS = ("none", "frontier", "ornith")
+WRITER_ACTOR = "roadmap-writer"  # the frontier roadmap writer's bd actor
 BD_TIMEOUT_S = 120  # one host-side bd call; a hung bd must not end the trial's bookkeeping silently
 WRITING_LIMIT_S = 1200  # the ornith writing phase's share of the trial budget, at most
 QUICK_SESSION_S = 60    # a loop session shorter than this, with no bead status change, is "quick"
@@ -286,7 +288,8 @@ def prepare_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors:
     With `cli` (product mode) the CLI is copied into the trial bin and writes MODULES.md itself.
     With `arc` (arc mode, needs `cli`) arc is installed in the project too.
     With `roadmap` frontier or ornith, bd is installed (metrics off, actor ornith) and initialised in
-    the project; frontier also imports <test.dir>/roadmaps/frontier.jsonl."""
+    the project; frontier also imports <test.dir>/roadmaps/frontier.jsonl. `workspace` (only for
+    prepare_roadmap_workspace) installs bd with actor roadmap-writer and imports nothing."""
     if arc is not None and cli is None:
         raise ValueError("--arc needs --product")
     trial_dir = Path(trial_dir).resolve()
@@ -313,7 +316,7 @@ def prepare_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors:
                           text=True).stdout.strip() if arc is not None else None
     if roadmap != "none":
         shutil.copy2(bd_binary(), bin_dir / "bd")
-        env.update(bd_env("ornith", home))
+        env.update(bd_env(WRITER_ACTOR if roadmap == "workspace" else "ornith", home))
         for args in [("init", "--stealth", "--non-interactive"),
                      *([("import", str(test.dir / "roadmaps" / "frontier.jsonl"))] if roadmap == "frontier" else [])]:
             r = bd_run(project, env, *args)
@@ -325,6 +328,42 @@ def prepare_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors:
     launcher.chmod(0o755)
     return Trial(trial_dir, project, home, bin_dir, mirrors, proxy,
                  env, _tool_binds(mirrors, proxy, bin_dir), base)
+
+
+def prepare_roadmap_workspace(test: AcceptanceTest, out_dir: Path, mirrors: Path, cli: Path, arc: Path) -> tuple[Trial, str]:
+    """A frontier trial's product+arc project without a roadmap, for the writer subagent.
+
+    BRIEF.md and ROADMAP-PROMPT.md sit in the project (git-excluded). Returns the trial and the
+    `env` prefix the writer puts before every command."""
+    if not test.roadmap_prompt:
+        raise ValueError(f"{test.dir / 'test.yaml'} has no roadmap_prompt")
+    trial = prepare_trial(test, "", out_dir, mirrors, None, cli=cli, arc=arc, roadmap="workspace")
+    (trial.project / "BRIEF.md").write_text(test.prompt)
+    (trial.project / "ROADMAP-PROMPT.md").write_text(test.roadmap_prompt)
+    with open(trial.project / ".git" / "info" / "exclude", "a") as f:
+        f.write("\nBRIEF.md\nROADMAP-PROMPT.md\n")
+    prefix = (f"env PATH={shlex.quote(str(trial.bin))}:$PATH DO_NOT_TRACK=1 BEADS_ACTOR={WRITER_ACTOR} "
+              f"HOME={shlex.quote(str(trial.home))}")
+    return trial, prefix
+
+
+def export_roadmap(project: Path, dest: Path) -> int:
+    """Export the writer's beads to `dest` (jsonl) and return how many; refuse a roadmap the writer left
+    claimed or that a different actor touched (a bead the build would trip over, or not frontier's own)."""
+    project, dest = Path(project).resolve(), Path(dest)
+    env = bd_env(WRITER_ACTOR, project.parent / "home")
+    r = bd_run(project, env, "export", "-o", str(dest))
+    if r.returncode != 0:
+        raise RuntimeError(f"bd export failed ({r.returncode}): {r.stderr.strip() or r.stdout.strip()}")
+    rows = [json.loads(line) for line in dest.read_text().splitlines() if line.strip()]
+    beads = [b for b in rows if b.get("_type", "issue") == "issue"]
+    bad = [f"{b['id']}: " + ("in_progress" if b.get("status") == "in_progress" else f"assignee {b['assignee']!r}")
+           for b in beads if b.get("status") == "in_progress" or b.get("assignee") not in (None, "", WRITER_ACTOR)]
+    bad += [f"{b['id']}: created_by {b.get('created_by')!r} (`bd q` leaves it empty; use `bd create`)" for b in beads if b.get("created_by") != WRITER_ACTOR]
+    if bad:
+        dest.unlink(missing_ok=True)
+        raise RuntimeError("roadmap not exportable: " + "; ".join(bad))
+    return len(beads)
 
 
 # --- running ---------------------------------------------------------------

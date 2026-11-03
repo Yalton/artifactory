@@ -221,10 +221,10 @@ def test_render_index_godot_matches_golden(cli):
     assert out == (GOLDEN / "godot-csharp.golden.md").read_text()
 
 
-def _product_mirrors(tmp_path):
+def _product_mirrors(tmp_path, modules=None):
     """Local bare mirror stand-ins for the godot test's kits (no network)."""
     mirrors = tmp_path / "mirrors"
-    for name in GODOT_TEST.modules:
+    for name in modules or GODOT_TEST.modules:
         src = tmp_path / "src" / name
         src.mkdir(parents=True)
         git("init", "-q", "-b", "main", cwd=src)
@@ -731,3 +731,60 @@ def test_export_failure_after_the_writing_phase_falls_back_to_the_brief(tmp_path
     timed_out, out = harness.run_agent(trial, test, fake_agent("true"), "ornith")
     assert out.roadmap_failed and out.sessions == 1 and out.bd_error is None
     assert calls == ["roadmap.jsonl", "beads-final.jsonl"]
+
+
+# --- frontier writer workspace ----------------------------------------------
+
+@pytest.fixture(scope="module")
+def workspace(tmp_path_factory, cli):
+    if not harness.BD_FALLBACK.is_file() and shutil.which("bd") is None:
+        pytest.skip("bd is not installed")
+    arc_src = Path(os.environ.get("ARC_SRC") or harness.DEFAULT_ARC_SRC)
+    if not arc_src.is_dir():
+        pytest.skip("arc source not found (set ARC_SRC)")
+    tmp = tmp_path_factory.mktemp("ws")
+    mirrors = _product_mirrors(tmp, LANTERN.modules)
+    arc = harness.build_arc(tmp / "arcbuild", arc_src)
+    trial, prefix = harness.prepare_roadmap_workspace(LANTERN, tmp / "ws", mirrors, cli, arc)
+    return trial, prefix
+
+
+def sh(prefix, cmd, cwd):
+    return subprocess.run(f"{prefix} {cmd}", shell=True, cwd=cwd, capture_output=True, text=True)
+
+
+def test_workspace_has_bin_brief_and_prompt_and_no_beads(workspace):
+    trial, prefix = workspace
+    for name in ("artifactory", "arc", "bd"):
+        assert (trial.bin / name).is_file()
+    assert (trial.project / "BRIEF.md").read_text() == LANTERN.prompt
+    assert (trial.project / "ROADMAP-PROMPT.md").read_text() == LANTERN.roadmap_prompt
+    assert git("status", "--porcelain", cwd=trial.project) == ""
+    assert "BEADS_ACTOR=roadmap-writer" in prefix and "DO_NOT_TRACK=1" in prefix
+    r = sh(prefix, "bd list --json", trial.project)
+    assert json.loads(r.stdout) in ([], None)
+
+
+def test_workspace_search_works_from_the_project_dir(workspace):
+    trial, prefix = workspace
+    r = sh(prefix, "artifactory search stand-in", trial.project)
+    assert r.returncode == 0, r.stderr
+
+
+def test_workspace_beads_export_as_roadmap_writer(workspace, tmp_path):
+    trial, prefix = workspace
+    r = sh(prefix, "bd create 'first bead' -p 2", trial.project)
+    assert r.returncode == 0, r.stderr
+    out = tmp_path / "frontier.jsonl"
+    assert harness.export_roadmap(trial.project, out) == 1
+    assert [json.loads(line)["created_by"] for line in out.read_text().splitlines()] == ["roadmap-writer"]
+
+
+def test_export_refuses_an_in_progress_bead(workspace, tmp_path):
+    trial, prefix = workspace
+    bid = json.loads(sh(prefix, "bd create 'claimed bead' -p 2 --json", trial.project).stdout)["id"]
+    assert sh(prefix, f"bd update {bid} --status in_progress", trial.project).returncode == 0
+    out = tmp_path / "frontier.jsonl"
+    with pytest.raises(RuntimeError, match=f"{bid}: in_progress"):
+        harness.export_roadmap(trial.project, out)
+    assert not out.exists()
