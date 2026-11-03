@@ -86,6 +86,15 @@ def _check_arc_gate(project: Path, base: str) -> CheckResult:
     """`arc gate --base <fixture commit> --json` with the trial's arc. Informational: never gates `passed`.
 
     --base, not --all: --all has no change set and skips the vendored changed-file check."""
+    # --base sees committed history only and the model's work is usually uncommitted:
+    # commit it in this disposable copy first (the real trial project is never touched).
+    for argv in (["add", "-A"],
+                 ["-c", "user.name=Artifactory Checker", "-c", "user.email=checker@artifactory.invalid",
+                  "-c", "commit.gpgsign=false", "commit", "--allow-empty", "--no-verify", "-qm", "checker snapshot"]):
+        c = _git(*argv, cwd=project)
+        if c.returncode != 0:
+            return CheckResult("arc_gate", False, f"could not snapshot the project: {c.stderr.strip()[-300:]}",
+                               gating=False)
     try:
         r = subprocess.run(["arc", "gate", "--base", base, "--json"], cwd=project, capture_output=True,
                            text=True, timeout=ARC_GATE_TIMEOUT_S)

@@ -362,13 +362,13 @@ def test_arc_gate_check_reports_findings_without_gating(cli, tmp_path):
     os.environ["PATH"] = f"{trial.bin}:{old}"
     try:
         clean = _check_arc_gate(trial.project, trial.base_commit)
-        (trial.project / "Player.cs").write_text("class Player {}\n")
-        (trial.project / "lib").mkdir()
-        (trial.project / "lib" / "x.cs").write_text("class X {}\n")
-        git("add", "-A", cwd=trial.project)
-        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "work", cwd=trial.project)
-        after = _check_arc_gate(trial.project, trial.base_commit)
+        # Uncommitted work: a file over the registry's file_lines limit (1000) is a size finding.
+        (trial.project / "Big.cs").write_text("// x\n" * 1100)
+        copy = tmp_path / "copy"  # the checker works on a disposable copy
+        shutil.copytree(trial.project, copy, symlinks=True)
+        after = _check_arc_gate(copy, trial.base_commit)
     finally:
         os.environ["PATH"] = old
     assert clean.name == "arc_gate" and clean.passed and not clean.gating, clean
-    assert not after.gating and after.detail.startswith("0 error(s)"), after
+    assert not after.gating and not after.passed and "Big.cs" in after.detail, after
+    assert git("status", "--porcelain", cwd=trial.project) != ""  # the trial project itself is untouched

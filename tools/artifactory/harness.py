@@ -415,6 +415,8 @@ def build_arc(out: Path, src: Path | None = None) -> Path:
 
 def count_denials(transcript: Path) -> int:
     """How often arc refused a write: its deny reason as the model saw it in the opencode stdout."""
+    # Deliberately a plain substring count over the raw transcript, not a parse of tool events:
+    # it also counts the phrase if the model quotes it in its own text. Good enough as a tally.
     try:
         return Path(transcript).read_text(errors="replace").count(DENIAL_MARK)
     except OSError:
