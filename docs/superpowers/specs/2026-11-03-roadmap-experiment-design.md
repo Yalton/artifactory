@@ -64,16 +64,17 @@ All three run `artifactory round tests/acceptance/godot-lantern-keep --product -
 
 One file, `tests/acceptance/godot-lantern-keep/roadmap-prompt.md`, used verbatim by both writers. It says:
 
-- read the brief; run `artifactory search` for each need, and `artifactory show` on candidates;
+- read the brief, which writers get as `BRIEF.md` in the project root; run `artifactory search` for each need, and `artifactory show` on candidates;
 - write beads with `bd create`, each completable in one fresh session, each with a description that says what to build, which modules it uses (by name, or `none`), and how to check it is done;
 - label a bead `gap` when no module covers its need;
 - add dependencies with `bd dep add` so `bd ready` gives a sensible order;
+- copy each checker contract verbatim into the bead that implements it, since bead sessions never see the brief;
 - describe outcomes and contracts, not code;
 - stop after writing the roadmap; do not build anything.
 
 ### frontier
 
-A frontier agent writes the roadmap once: headless `claude -p --model claude-opus-5-5` run in the trial sandbox on a prepared trial project (with `artifactory`, `arc` and `bd` on PATH and the dir: provider on the mirrors). Its HOME holds only the Claude credentials, with no CLAUDE.md, hooks, skills, plugins or MCP servers, so it gets the same instructions Ornith gets and nothing else. The mirrors are local paths, so it needs no network beyond the model API. This uses the user's Claude subscription once; the user asked for a frontier condition. Its beads are exported (`bd export`) to `tests/acceptance/godot-lantern-keep/roadmaps/frontier.jsonl` and committed. Every frontier trial imports that same file. A fresh reviewer reads it before the round and rejects it only if it contains code or violates the prompt.
+A frontier agent writes the roadmap once: a subagent (claude-opus-5-5) of the controlling Claude Code session, run against a prepared writer workspace (a trial project with `artifactory`, `arc` and `bd` set up as in a frontier trial, actor `roadmap-writer`). The user chose this over a headless `claude -p` run (2026-11-03) so the roadmap uses no extra subscription allowance. The subagent sees the user's global CLAUDE.md, which Ornith does not; the report states this difference. The subagent is told to use only the writer prompt and `BRIEF.md`, to run commands from the workspace with its `bin` on PATH, and not to claim beads. Its beads are exported (`bd export`) to `tests/acceptance/godot-lantern-keep/roadmaps/frontier.jsonl` and committed. Every frontier trial imports that same file. A fresh reviewer reads it before the round and rejects it only if it contains code or violates the prompt.
 
 Frozen once, so frontier trials share one roadmap. Its variance between writings is not measured; the report says so.
 
@@ -92,7 +93,9 @@ The harness runs beads one at a time, the way `run-beads` does: while time remai
 ### When the loop stalls
 
 - Before each pick, the harness resets beads left `in_progress` by a finished session back to `open`.
-- When `bd ready` is empty but open or blocked beads remain and time is left, the harness runs one more session with the prompt `Some beads are unfinished. Run bd list --status open,blocked and work through them in any order, ignoring dependencies. Close each one you finish.` It repeats this until no open beads remain or time is up. The roadmap stays the source of work, and no time is left unused.
+- When `bd ready` is empty but beads remain open, in progress or blocked and time is left, the harness runs a stall session with the prompt `Some beads are unfinished. Run bd list --status open,blocked and work through them in any order, ignoring dependencies. Close each one you finish.` After it, the harness resets in-progress beads and goes back to `bd ready`. This repeats until every bead is closed or time is up, so no time is left unused.
+- Three sessions in a row that each end in under 60 s with no bead status change stop the loop, and the trial records `loop_stalled: true` (it guards against a dead model server).
+- A bead trial counts as a timeout, like none, only when the last session was killed at the deadline.
 - If the ornith writing phase creates no beads, the trial's build phase is one session with the brief as the prompt, as in none, and the trial records `roadmap_failed: true`.
 - If writing finishes before 20 minutes, the rest goes to building. The 4-hour total is fixed.
 
@@ -107,7 +110,7 @@ Per trial, `checker.json` gets the existing Godot checks plus:
 - `player_moves` and `player_visible` run in `courtyard.tscn` instead of the main scene: the probe loads the room directly, since the main scene is the title screen;
 - `rooms`: the probe loads each room scene and reports whether it contains a node in group `player` at runtime (a group set in C# counts);
 - `dialogue`: the probe loads `hall.tscn`, moves the player next to the node in group `keeper`, presses `interact`, and reports whether a node in group `dialogue` became visible;
-- `title_scene`: the main scene is not a room scene;
+- `title_scene`: the main scene is not a room scene (a `uid://` main scene is resolved against the room scenes' uids);
 - the arc fields from round 9 (`arc_gate`, `arc_denials`, `arc_hook_live`).
 
 Pass/fail stays as today's gating checks plus `rooms` and `dialogue`. `title_scene` is informational.
@@ -115,6 +118,7 @@ Pass/fail stays as today's gating checks plus `rooms` and `dialogue`. `title_sce
 Per bead condition, the round report also records from the exported beads:
 
 - bead count, closed, blocked;
+- contracts: which of the brief's checker contracts appear in the roadmap's bead text;
 - module naming, parsed from the `Modules:` line the writer prompt requires in every bead description (`Modules: A, B` or `Modules: none`): which of the 8 kits are named by at least one bead, names that are not real modules, and whether a bead labelled `gap` covers dialogue;
 - beads that ask for a kit's job to be reimplemented, judged by hand at report time from the exported beads.
 
@@ -122,11 +126,12 @@ Screenshots of the title, a room and the dialogue box (godot-shot), viewed, for 
 
 ## Harness changes
 
-- `tests/acceptance/godot-lantern-keep/`: `test.yaml` (all 8 modules, `time_limit_s: 14400`), `brief.md`, `roadmap-prompt.md`, `duplication.yaml` (reuse capsule-room's patterns), `arc-registry.yaml`, `module-key.yaml`, and `roadmaps/frontier.jsonl` once written.
+- `tests/acceptance/godot-lantern-keep/`: `test.yaml` (all 8 modules, `time_limit_s: 14400`), `brief.md`, `roadmap-prompt.md`, `duplication.yaml` (reuse capsule-room's patterns), `arc-registry.yaml` (used by the harness in place of capsule-room's), and `roadmaps/frontier.jsonl` once written.
 - `round --roadmap frontier|ornith|none` (default none). frontier and ornith require `--product`.
 - the real `bd` binary (`~/.local/lib/node_modules/@beads/bd/bin/bd`, not the `~/.local/bin/bd` Node wrapper, which loops when copied) is copied into `trial.bin`. Every `bd` call, in the sandbox and on the host, runs with metrics off, and the actor is set to `roadmap-writer` or `ornith` so exports carry no user identity; prepare_trial runs `bd init --stealth` in the trial project (no git hooks, nothing committed) and, for frontier, `bd import` of the frozen file.
 - The bead loop runs on the host and calls `bd` against the trial project between sessions; each session is the existing sandboxed opencode run with a new prompt and the remaining time as its limit.
 - Checker additions: a probe mode selected by an environment variable (capsule-room unchanged) that runs `player_moves`/`player_visible` in courtyard, then `rooms` and `dialogue`; plus the static `title_scene` check.
+- Bead-condition rounds write to `round-<N>-<roadmap>` so the three conditions share a round number without colliding.
 - `round.json` records `roadmap`. Trial JSON records the bead outcome counts.
 
 ## Decided by me (the user delegated these)
@@ -134,7 +139,8 @@ Screenshots of the title, a room and the dialogue box (godot-shot), viewed, for 
 - The project (Lantern Keep), the gap (dialogue), the contracts, the time budget (4 hours), and 3 trials per condition.
 - arc on in all conditions, so the only variable is the roadmap.
 - The frontier roadmap is frozen once; Ornith's is written per trial.
-- Same writer prompt for both writers, and a clean HOME for the frontier writer.
+- Same writer prompt for both writers.
+- (User, 2026-11-03) The frontier writer is an in-session subagent, not headless `claude -p`.
 - Stall handling and the fixed rule for adding trials.
 - The writer prompt requires a `Modules:` line so naming is scored mechanically.
 
