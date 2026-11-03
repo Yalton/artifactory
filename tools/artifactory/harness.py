@@ -352,18 +352,27 @@ def export_roadmap(project: Path, dest: Path) -> int:
     claimed or that a different actor touched (a bead the build would trip over, or not frontier's own)."""
     project, dest = Path(project).resolve(), Path(dest)
     env = bd_env(WRITER_ACTOR, project.parent / "home")
-    r = bd_run(project, env, "export", "-o", str(dest))
-    if r.returncode != 0:
-        raise RuntimeError(f"bd export failed ({r.returncode}): {r.stderr.strip() or r.stdout.strip()}")
-    rows = [json.loads(line) for line in dest.read_text().splitlines() if line.strip()]
-    beads = [b for b in rows if b.get("_type", "issue") == "issue"]
+    tmp = dest.with_name(f".{dest.name}.tmp")  # moved into place only once the beads pass
+    try:
+        r = bd_run(project, env, "export", "-o", str(tmp))
+        if r.returncode != 0:
+            raise RuntimeError(f"bd export failed ({r.returncode}): {r.stderr.strip() or r.stdout.strip()}")
+        rows = [json.loads(line) for line in tmp.read_text().splitlines() if line.strip()]
+        beads = [b for b in rows if b.get("_type", "issue") == "issue"]
+        bad = _unexportable(beads)
+        if bad:
+            raise RuntimeError("roadmap not exportable: " + "; ".join(bad))
+        tmp.replace(dest)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return len(beads)
+
+
+def _unexportable(beads: list[dict]) -> list[str]:
     bad = [f"{b['id']}: " + ("in_progress" if b.get("status") == "in_progress" else f"assignee {b['assignee']!r}")
            for b in beads if b.get("status") == "in_progress" or b.get("assignee") not in (None, "", WRITER_ACTOR)]
     bad += [f"{b['id']}: created_by {b.get('created_by')!r} (`bd q` leaves it empty; use `bd create`)" for b in beads if b.get("created_by") != WRITER_ACTOR]
-    if bad:
-        dest.unlink(missing_ok=True)
-        raise RuntimeError("roadmap not exportable: " + "; ".join(bad))
-    return len(beads)
+    return bad
 
 
 # --- running ---------------------------------------------------------------

@@ -14,6 +14,7 @@ Commands you can run:
   EOF
   ```
   With `--silent`, `bd create` prints only the new bead's id. Write the ids down.
+- Create every bead with `bd create`, never `bd q`: `bd q` leaves the author empty and the export refuses the roadmap.
 - `bd dep add <issue> <depends-on>` makes `<issue>` wait until `<depends-on>` is closed. Both are ids printed by `bd create`.
 - `bd list` lists the beads you have made so far, with their ids.
 

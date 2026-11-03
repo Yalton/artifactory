@@ -788,3 +788,31 @@ def test_export_refuses_an_in_progress_bead(workspace, tmp_path):
     with pytest.raises(RuntimeError, match=f"{bid}: in_progress"):
         harness.export_roadmap(trial.project, out)
     assert not out.exists()
+
+
+def test_export_refuses_a_foreign_assignee(workspace, tmp_path):
+    trial, prefix = workspace
+    bid = json.loads(sh(prefix, "bd create 'taken bead' -p 2 --json", trial.project).stdout)["id"]
+    assert sh(prefix, f"bd update {bid} --assignee someone-else", trial.project).returncode == 0
+    with pytest.raises(RuntimeError, match=f"{bid}: assignee 'someone-else'"):
+        harness.export_roadmap(trial.project, tmp_path / "frontier.jsonl")
+
+
+def test_export_refuses_a_bead_created_by_another_actor(workspace, tmp_path):
+    trial, prefix = workspace
+    other = prefix.replace("BEADS_ACTOR=roadmap-writer", "BEADS_ACTOR=intruder")
+    bid = json.loads(sh(other, "bd create 'foreign bead' -p 2 --json", trial.project).stdout)["id"]
+    with pytest.raises(RuntimeError, match=f"{bid}: created_by 'intruder'"):
+        harness.export_roadmap(trial.project, tmp_path / "frontier.jsonl")
+
+
+def test_a_refused_export_keeps_the_existing_roadmap(workspace, tmp_path):
+    trial, prefix = workspace
+    bid = json.loads(sh(prefix, "bd create 'claimed bead' -p 2 --json", trial.project).stdout)["id"]
+    sh(prefix, f"bd update {bid} --status in_progress", trial.project)
+    out = tmp_path / "frontier.jsonl"
+    out.write_text("old roadmap\n")
+    with pytest.raises(RuntimeError):
+        harness.export_roadmap(trial.project, out)
+    assert out.read_text() == "old roadmap\n"
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith("frontier")] == ["frontier.jsonl"]
