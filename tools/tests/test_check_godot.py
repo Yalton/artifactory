@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import shutil
 import subprocess
@@ -311,3 +312,183 @@ def test_baseline_mode_skips_live_and_marks_manual(tmp_path):
         assert checks[name].passed is False
         assert checks[name].detail.startswith("manual:")
     assert failing(result) == {"modules_live", "modules_unmodified"}, result.to_json()
+
+
+# --- lantern probe mode ----------------------------------------------------
+
+LANTERN = DATA / "lantern"
+LANTERN_NAMES = [*NAMES, "rooms", "dialogue", "title_scene"]
+needs_godot = pytest.mark.skipif(not (shutil.which("godot") and shutil.which("dotnet")),
+                                 reason="needs godot and dotnet on PATH")
+
+
+def lantern_test(fixture: Path = BLANK) -> AcceptanceTest:
+    return AcceptanceTest(
+        name="lantern-stub", ecosystem="godot-csharp", fixture=fixture, prompt="p",
+        modules=[], time_limit_s=60, duplication={}, probe="lantern",
+    )
+
+
+def fake_project(path: Path, main_scene: str | None = "res://Title.tscn") -> Path:
+    path.mkdir(parents=True)
+    app = f'run/main_scene="{main_scene}"\n' if main_scene else ""
+    (path / "project.godot").write_text(f'config_version=5\n\n[application]\n\n{app}\n[dotnet]\n\n'
+                                        'project/assembly_name="Fake"\n')
+    (path / "Fake.csproj").write_text("<Project/>\n")
+    return path
+
+
+@pytest.fixture
+def fake_godot(monkeypatch):
+    """Replace every dotnet/godot process with a recorder that succeeds and prints `output`."""
+    calls = []
+    state = {"output": ""}
+
+    def run(cmd, cwd, timeout, log, env=None):
+        calls.append((cmd, dict(env or {})))
+        return godot_checks.Proc(0, state["output"] if cmd[0] == "godot" else "", 0.1)
+
+    monkeypatch.setattr(godot_checks, "run_process", run)
+    monkeypatch.setattr(godot_checks, "_baseline_errors", {})
+    return calls, state
+
+
+def test_capsule_room_check_names_unchanged(tmp_path, fake_godot):
+    project = fake_project(tmp_path / "project")
+    test = dataclasses.replace(acceptance(), modules=[], fixture=fake_project(tmp_path / "blank"))
+    result = check_godot(project, test, tmp_path, BRANCH)
+    assert [c.name for c in result.checks] == NAMES
+    assert all("ARTIFACTORY_PROBE_MODE" not in env for _, env in fake_godot[0])
+
+
+def test_lantern_appends_rooms_dialogue_title(tmp_path, fake_godot):
+    calls, state = fake_godot
+    state["output"] = "PROBE rooms=true missing=none\nPROBE dialogue=true problem=none\n"
+    project = fake_project(tmp_path / "project")
+    result = check_godot(project, lantern_test(fake_project(tmp_path / "blank")), tmp_path, BRANCH)
+    assert [c.name for c in result.checks] == LANTERN_NAMES
+    checks = {c.name: c for c in result.checks}
+    assert checks["rooms"].passed and checks["rooms"].gating
+    assert checks["dialogue"].passed and checks["dialogue"].gating
+    assert checks["title_scene"].passed and not checks["title_scene"].gating
+
+
+def test_lantern_build_failure_marks_rooms_and_dialogue_not_run(tmp_path, fake_godot):
+    project = tmp_path / "project"
+    project.mkdir()  # no project.godot: the build fails before anything runs
+    result = check_godot(project, lantern_test(), tmp_path, BRANCH)
+    checks = {c.name: c for c in result.checks}
+    assert [c.name for c in result.checks] == LANTERN_NAMES
+    for name in ("rooms", "dialogue"):
+        assert not checks[name].passed and checks[name].detail == "not run: build failed"
+
+
+def test_probe_mode_reaches_only_the_trial_godot_run(tmp_path, fake_godot, monkeypatch):
+    calls, _ = fake_godot
+    monkeypatch.setenv("ARTIFACTORY_PROBE_MODE", "lantern")  # never inherited by the baseline
+    blank = fake_project(tmp_path / "blank", main_scene=None)
+    project = fake_project(tmp_path / "project")
+    check_godot(project, lantern_test(blank), tmp_path, BRANCH)
+    # The trial copy's build, import and run, then the blank baseline's build, import and run.
+    modes = [env.get("ARTIFACTORY_PROBE_MODE") for _, env in calls]
+    assert modes == [None, None, "lantern", None, None, None], [c for c, _ in calls]
+    assert calls[2][0][0] == "godot" and "--import" not in calls[2][0]
+
+
+def test_blank_baseline_gets_no_probe_mode(tmp_path, fake_godot, monkeypatch):
+    calls, _ = fake_godot
+    monkeypatch.setenv("ARTIFACTORY_PROBE_MODE", "lantern")
+    godot_checks._blank_errors(fake_project(tmp_path / "blank", main_scene=None))
+    assert len(calls) == 3
+    assert all("ARTIFACTORY_PROBE_MODE" not in env for _, env in calls)
+
+
+@pytest.mark.parametrize("line,name,passed", [
+    ("PROBE rooms=true missing=none", "rooms", True),
+    ("PROBE rooms=false missing=hall,tower", "rooms", False),
+    ("PROBE dialogue=true problem=none", "dialogue", True),
+    ("PROBE dialogue=false problem=not_shown", "dialogue", False),
+])
+def test_check_probe_parses_lantern_lines(line, name, passed):
+    check = godot_checks._check_probe(godot_checks.Proc(0, f"noise\n{line}\n", 1.0), name)
+    assert check.passed is passed and check.detail == line
+
+
+def write_room(project: Path, name: str, uid: str) -> None:
+    (project / "rooms").mkdir(exist_ok=True)
+    (project / "rooms" / f"{name}.tscn").write_text(
+        f'[gd_scene load_steps=1 format=3 uid="{uid}"]\n\n[node name="{name}" type="Node3D"]\n')
+
+
+def test_title_scene_passes_for_a_title_screen(tmp_path):
+    project = fake_project(tmp_path / "p", main_scene="res://Title.tscn")
+    check = godot_checks._check_title_scene(project)
+    assert check.name == "title_scene" and check.passed and not check.gating
+
+
+def test_title_scene_fails_when_main_scene_is_a_room(tmp_path):
+    project = fake_project(tmp_path / "p", main_scene="res://rooms/courtyard.tscn")
+    check = godot_checks._check_title_scene(project)
+    assert not check.passed and "courtyard" in check.detail
+
+
+def test_title_scene_fails_without_main_scene(tmp_path):
+    assert not godot_checks._check_title_scene(fake_project(tmp_path / "p", main_scene=None)).passed
+
+
+def test_title_scene_resolves_uid_main_scene(tmp_path):
+    room = fake_project(tmp_path / "room", main_scene="uid://hallroom123")
+    write_room(room, "courtyard", "uid://court456")
+    write_room(room, "hall", "uid://hallroom123")
+    check = godot_checks._check_title_scene(room)
+    assert not check.passed and "res://rooms/hall.tscn" in check.detail
+    title = fake_project(tmp_path / "title", main_scene="uid://title789")
+    write_room(title, "hall", "uid://hallroom123")
+    assert godot_checks._check_title_scene(title).passed
+
+
+def make_lantern(tmp_path: Path) -> Path:
+    """A tiny 3D Lantern Keep: title main scene, three rooms, a keeper whose dialogue opens on `interact`."""
+    project = tmp_path / "lantern"
+    shutil.copytree(BLANK, project)
+    shutil.copytree(LANTERN, project, dirs_exist_ok=True)
+    # The capsule room's move_* actions plus `interact` on E (physical keycode 69).
+    base = (DATA / "base" / "project.godot").read_text()
+    inputs = base[base.index("[input]"):]
+    forward = inputs[inputs.index("move_forward="):inputs.index("move_back=")]
+    interact = forward.replace("move_forward=", "interact=").replace('"physical_keycode":87', '"physical_keycode":69')
+    godot_file = project / "project.godot"
+    text = godot_file.read_text().replace("[application]\n", '[application]\n\nrun/main_scene="res://Title.tscn"\n')
+    godot_file.write_text(text + "\n" + inputs + interact)
+    git("init", "-q", "-b", "main", cwd=project)
+    git("add", ".", cwd=project)
+    git("commit", "-q", "-m", "lantern", cwd=project)
+    return project
+
+
+@pytest.mark.godot
+@needs_godot
+def test_lantern_fixture_passes_rooms_and_dialogue(tmp_path):
+    project = make_lantern(tmp_path)
+    (tmp_path / "mirrors").mkdir()
+    result = check_godot(project, lantern_test(), tmp_path / "mirrors", BRANCH)
+    checks = {c.name: c for c in result.checks}
+    assert [c.name for c in result.checks] == LANTERN_NAMES
+    assert checks["rooms"].passed, result.to_json()
+    assert checks["dialogue"].passed, result.to_json()
+    assert failing(result) == set(), result.to_json()
+
+
+@pytest.mark.godot
+@needs_godot
+def test_lantern_missing_room_and_keeper_fail(tmp_path):
+    project = make_lantern(tmp_path)
+    (project / "rooms" / "tower.tscn").unlink()
+    hall = project / "rooms" / "hall.tscn"
+    hall.write_text(hall.read_text().replace('groups=["keeper"]', ""))
+    (tmp_path / "mirrors").mkdir()
+    result = check_godot(project, lantern_test(), tmp_path / "mirrors", BRANCH)
+    checks = {c.name: c for c in result.checks}
+    assert failing(result) == {"rooms", "dialogue"}, result.to_json()
+    assert checks["rooms"].detail == "PROBE rooms=false missing=tower"
+    assert checks["dialogue"].detail == "PROBE dialogue=false problem=no_keeper"
