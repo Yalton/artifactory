@@ -42,7 +42,7 @@ REPO = Path(__file__).resolve().parents[2]
 RESULTS = REPO / "results"
 GO_SAMPLES = REPO / "samples" / "go"
 GODOT_TEST = REPO / "tests" / "acceptance" / "godot-capsule-room"
-ARC_REGISTRY = GODOT_TEST / "arc-registry.yaml"
+BD_FALLBACK = Path.home() / ".local" / "lib" / "node_modules" / "@beads" / "bd" / "bin" / "bd"
 DEFAULT_ARC_SRC = Path("/home/yalt/Documents/Projects/Tech/AI/arc")
 DENIAL_MARK = "do not edit it."  # the tail of arc's deny reason for a write inside an installed module
 BASELINE_README = Path("/data/fast/Projects/Tech/Games/Godot/Modules/README.md")
@@ -208,6 +208,28 @@ def _run_tool(argv: list[str], env: dict[str, str], home: Path, cwd: Path | None
         raise RuntimeError(f"{' '.join(argv[:2])} failed ({r.returncode}): {r.stderr.strip() or r.stdout.strip()}")
 
 
+def bd_binary() -> Path:
+    """The real bd binary. `~/.local/bin/bd` is a Node wrapper that runs itself forever when copied."""
+    found = shutil.which("bd")
+    if found:
+        real = Path(found).resolve().parent / "bd"  # the wrapper resolves to bd.js beside the binary
+        if real.is_file() and real.read_bytes()[:4] == b"\x7fELF":
+            return real
+    if BD_FALLBACK.is_file():
+        return BD_FALLBACK.resolve()
+    raise FileNotFoundError(f"bd not found: neither the package beside `which bd` nor {BD_FALLBACK}")
+
+
+def bd_env(actor: str, home: Path) -> dict[str, str]:
+    """Metrics off, a fixed actor, bd's state inside `home`."""
+    return {"DO_NOT_TRACK": "1", "BEADS_ACTOR": actor, "HOME": str(home)}
+
+
+def bd_run(project: Path, env: dict, *args) -> subprocess.CompletedProcess:
+    """Run bd in `project` with `env`, host-side. env must carry bd_env's values; PATH defaults to the host's (bd runs git)."""
+    return subprocess.run([str(bd_binary()), *args], cwd=project, env={"PATH": os.environ["PATH"], **env}, capture_output=True, text=True)
+
+
 def _product_setup(test: AcceptanceTest, cli: Path, project: Path, home: Path, bin_dir: Path,
                    mirrors: Path | None, env: dict[str, str], arc: Path | None = None) -> None:
     """Put the CLI in the trial bin, point the project at the local mirrors and run `artifactory index`.
@@ -224,7 +246,7 @@ def _product_setup(test: AcceptanceTest, cli: Path, project: Path, home: Path, b
     (project / "artifactory.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
     if arc is not None:
         (project / ".arch").mkdir(exist_ok=True)
-        shutil.copy2(ARC_REGISTRY, project / ".arch" / "registry.yaml")
+        shutil.copy2(test.dir / "arc-registry.yaml", project / ".arch" / "registry.yaml")
         _run_tool([str(bin_dir / "arc"), "init", "--opencode", "--no-detect", "--ci", "none"], env, home, project)
         (project / ".git" / "hooks" / "pre-commit").unlink(missing_ok=True)
     _run_tool([str(bin_dir / "artifactory"), "index", "--project", str(project), "--arc",
@@ -232,11 +254,13 @@ def _product_setup(test: AcceptanceTest, cli: Path, project: Path, home: Path, b
 
 
 def prepare_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors: Path | None,
-                  proxy: Path | None, cli: Path | None = None, arc: Path | None = None) -> Trial:
+                  proxy: Path | None, cli: Path | None = None, arc: Path | None = None, roadmap: str = "none") -> Trial:
     """Create project (fixture + MODULES.md, committed), HOME and the godot launcher.
 
     With `cli` (product mode) the CLI is copied into the trial bin and writes MODULES.md itself.
-    With `arc` (arc mode, needs `cli`) arc is installed in the project too."""
+    With `arc` (arc mode, needs `cli`) arc is installed in the project too.
+    With `roadmap` frontier or ornith, bd is installed (metrics off, actor ornith) and initialised in
+    the project; frontier also imports <test.dir>/roadmaps/frontier.jsonl."""
     if arc is not None and cli is None:
         raise ValueError("--arc needs --product")
     trial_dir = Path(trial_dir).resolve()
@@ -261,6 +285,14 @@ def prepare_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors:
          "commit", "-qm", "Initial project", cwd=project)
     base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=project, check=True, capture_output=True,
                           text=True).stdout.strip() if arc is not None else None
+    if roadmap != "none":
+        shutil.copy2(bd_binary(), bin_dir / "bd")
+        env.update(bd_env("ornith", home))
+        for args in [("init", "--stealth", "--non-interactive"),
+                     *([("import", str(test.dir / "roadmaps" / "frontier.jsonl"))] if roadmap == "frontier" else [])]:
+            r = bd_run(project, env, *args)
+            if r.returncode != 0:
+                raise RuntimeError(f"bd {args[0]} failed ({r.returncode}): {r.stderr.strip() or r.stdout.strip()}")
     # A script, never a symlink: a symlinked Godot deadlocks headless.
     launcher = bin_dir / "godot"
     launcher.write_text(f'#!/bin/sh\nexec "{GODOT_BINARY}" "$@"\n')

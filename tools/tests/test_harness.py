@@ -389,3 +389,76 @@ def test_arc_gate_check_reports_findings_without_gating(cli, tmp_path):
     assert clean.name == "arc_gate" and clean.passed and not clean.gating, clean
     assert not after.gating and not after.passed and "Big.cs" in after.detail, after
     assert git("status", "--porcelain", cwd=trial.project) != ""  # the trial project itself is untouched
+
+
+# --- bd in roadmap trials ---------------------------------------------------
+
+LANTERN = load_acceptance(ROOT / "tests" / "acceptance" / "godot-lantern-keep")
+SAMPLE_ROADMAP = Path(__file__).parent / "data" / "sample-roadmap.jsonl"
+needs_bd = pytest.mark.skipif(not harness.BD_FALLBACK.is_file() and shutil.which("bd") is None,
+                              reason="bd is not installed")
+
+
+def test_bd_env_values(tmp_path):
+    assert harness.bd_env("ornith", tmp_path) == {
+        "DO_NOT_TRACK": "1", "BEADS_ACTOR": "ornith", "HOME": str(tmp_path)}
+
+
+@needs_bd
+def test_bd_binary_is_the_real_elf_not_the_node_wrapper():
+    b = harness.bd_binary()
+    assert b.is_file() and b.read_bytes()[:4] == b"\x7fELF"
+
+
+def test_bd_binary_missing_says_so(monkeypatch, tmp_path):
+    monkeypatch.setattr(harness, "BD_FALLBACK", tmp_path / "nope")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    with pytest.raises(FileNotFoundError, match="bd"):
+        harness.bd_binary()
+
+
+@needs_bd
+def test_bd_roadmap_trial_init_is_clean_and_import_keeps_ids_and_deps(tmp_path):
+    test_dir = tmp_path / "t"
+    (test_dir / "roadmaps").mkdir(parents=True)
+    shutil.copy2(SAMPLE_ROADMAP, test_dir / "roadmaps" / "frontier.jsonl")
+    shutil.copy2(LANTERN.dir / "arc-registry.yaml", test_dir / "arc-registry.yaml")
+    test = dataclasses.replace(LANTERN, dir=test_dir)
+    home_before = {p for p in Path.home().glob(".beads*")}
+    trial = prepare_trial(test, "", tmp_path / "trial-1", None, None, roadmap="frontier")
+    assert git("status", "--porcelain", cwd=trial.project) == ""
+    assert trial.env["DO_NOT_TRACK"] == "1" and trial.env["BEADS_ACTOR"] == "ornith"
+    assert trial.env["HOME"] == str(trial.home)
+    assert (trial.bin / "bd").is_file()
+    r = harness.bd_run(trial.project, trial.env, "export")
+    rows = [json.loads(line) for line in r.stdout.splitlines() if line.startswith("{")]
+    ids = {x["id"] for x in rows}
+    assert ids == {"bdw-aq5", "bdw-be8"}
+    ui = next(x for x in rows if x["id"] == "bdw-be8")
+    assert [d["depends_on_id"] for d in ui["dependencies"]] == ["bdw-aq5"]
+    assert {p for p in Path.home().glob(".beads*")} == home_before
+
+
+@needs_bd
+def test_ornith_roadmap_trial_starts_with_no_beads(tmp_path):
+    trial = prepare_trial(LANTERN, "", tmp_path / "trial-1", None, None, roadmap="ornith")
+    assert git("status", "--porcelain", cwd=trial.project) == ""
+    r = harness.bd_run(trial.project, trial.env, "list", "--json")
+    assert json.loads(r.stdout) in ([], None)
+
+
+@needs_bd
+def test_host_side_bd_call_stays_inside_its_home(tmp_path):
+    project, home = tmp_path / "p", tmp_path / "h"
+    project.mkdir(), home.mkdir()
+    git("init", "-q", "-b", "main", cwd=project)
+    real = Path.home() / ".beads"
+    before = real.stat().st_mtime if real.exists() else None
+    r = harness.bd_run(project, harness.bd_env("test", home), "init", "--stealth", "--non-interactive")
+    assert r.returncode == 0, r.stderr
+    assert (real.stat().st_mtime if real.exists() else None) == before
+
+
+def test_prepare_trial_none_roadmap_has_no_bd(tmp_path):
+    trial = prepare_trial(GO_TEST, "# index", tmp_path / "trial-1", None, None)
+    assert not (trial.bin / "bd").exists() and "DO_NOT_TRACK" not in trial.env
