@@ -132,3 +132,36 @@ func TestSyncFromTopLevelWithRelativePaths(t *testing.T) {
 		t.Errorf("paths not top-level relative: %q", b)
 	}
 }
+
+func TestSyncStaleRemovalScopedToProject(t *testing.T) {
+	list := `{"modules":[
+{"id":"AOld","summary":"x","source":"artifactory","paths":["a/addons/AOld/**"]},
+{"id":"BOld","summary":"x","source":"artifactory","paths":["b/addons/BOld/**"]},
+{"id":"GoOld","summary":"x","source":"artifactory","import":"example.com/x"}]}`
+	log := logFakeArc(t, list)
+	top := t.TempDir()
+	if b, err := exec.Command("git", "-C", top, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, b)
+	}
+	a := filepath.Join(top, "a")
+	os.MkdirAll(a, 0o755)
+	os.MkdirAll(filepath.Join(top, "b"), 0o755)
+	rms := func() (rm []string) {
+		for _, c := range calls(t, log) {
+			if c[1] == "rm" {
+				rm = append(rm, c[2])
+			}
+		}
+		return
+	}
+	Sync(a, nil)
+	if !reflect.DeepEqual(rms(), []string{"AOld"}) {
+		t.Errorf("project a removed %q, want only AOld", rms())
+	}
+	os.Remove(log)
+	Sync(top, nil)
+	// A project at the top level contains every path, and owns path-less entries.
+	if !reflect.DeepEqual(rms(), []string{"AOld", "BOld", "GoOld"}) {
+		t.Errorf("top level removed %q, want all three", rms())
+	}
+}

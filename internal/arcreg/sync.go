@@ -87,8 +87,9 @@ func Sync(projectDir string, mods []Entry) (warnings []string) {
 	}
 	var list struct {
 		Modules []struct {
-			ID     string `json:"id"`
-			Source string `json:"source"`
+			ID     string   `json:"id"`
+			Source string   `json:"source"`
+			Paths  []string `json:"paths"`
 		} `json:"modules"`
 	}
 	if err := json.Unmarshal([]byte(out), &list); err != nil {
@@ -96,7 +97,7 @@ func Sync(projectDir string, mods []Entry) (warnings []string) {
 		return warnings
 	}
 	for _, e := range list.Modules {
-		if e.Source != Source || keep[e.ID] {
+		if e.Source != Source || keep[e.ID] || !ownedBy(prefix, e.Paths) {
 			continue
 		}
 		if out, err := run(top, "arc", "module", "rm", e.ID); err != nil {
@@ -127,4 +128,19 @@ func detail(out string, err error) string {
 		return err.Error()
 	}
 	return out
+}
+
+// ownedBy reports whether a registry entry with paths belongs to the project
+// at prefix (its top-level-relative directory, empty at the top level). An
+// entry with no paths (a go import) belongs only to a project at the top.
+func ownedBy(prefix string, paths []string) bool {
+	if len(paths) == 0 {
+		return prefix == ""
+	}
+	for _, p := range paths {
+		if prefix != "" && !strings.HasPrefix(p, prefix+"/") {
+			return false
+		}
+	}
+	return true
 }

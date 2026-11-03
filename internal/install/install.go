@@ -18,7 +18,7 @@ import (
 // addons/<Name>. For go it is the module directory reported by `go list -m`
 // for the module path in the install line.
 func Locate(projectDir string, m catalog.Module) (string, error) {
-	if m.Ecosystem == "godot-csharp" {
+	if m.Ecosystem == descriptor.GodotCSharp {
 		dir := filepath.Join(projectDir, "addons", m.Name)
 		if _, err := os.Stat(dir); err != nil {
 			return "", fmt.Errorf("%s not found after install: %w", dir, err)

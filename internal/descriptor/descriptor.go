@@ -13,8 +13,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// GodotCSharp is the godot-csharp ecosystem name.
+const GodotCSharp = "godot-csharp"
+
 // Ecosystems lists the supported module ecosystems.
-var Ecosystems = []string{"godot-csharp", "go"}
+var Ecosystems = []string{GodotCSharp, "go"}
 
 var strFields = []string{"name", "ecosystem", "version", "summary", "install", "liveness", "docs", "example", "test"}
 var listFields = []string{"replaces", "setup", "entry"}
@@ -130,7 +133,7 @@ func Parse(data []byte, folder string) (Descriptor, []string) {
 	}
 
 	eco, hasEco := strs["ecosystem"]
-	if hasEco && eco != "go" && eco != "godot-csharp" {
+	if hasEco && eco != "go" && eco != GodotCSharp {
 		problems = append(problems, "ecosystem: must be one of "+strings.Join(Ecosystems, ", "))
 	}
 	if s, ok := strs["summary"]; ok && (strings.Contains(s, "\n") || utf8.RuneCountInString(s) >= 100) {
@@ -147,7 +150,7 @@ func Parse(data []byte, folder string) (Descriptor, []string) {
 			}
 		}
 	}
-	if eco == "godot-csharp" {
+	if eco == GodotCSharp {
 		if name, ok := strs["name"]; ok && name != folder {
 			problems = append(problems, fmt.Sprintf("name: '%s' must match folder name '%s'", name, folder))
 		}

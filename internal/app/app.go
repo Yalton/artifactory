@@ -199,6 +199,7 @@ func (a App) Index(ctx context.Context, dir string, modulesOnly bool, arcMode st
 	opt := index.Options{Arc: arc, CLIInstall: !modulesOnly}
 	var ds []descriptor.Descriptor
 	var reg []arcreg.Entry
+	var skipped []string
 	if len(f.Modules) > 0 {
 		p, err := a.ResolveProvider("", dir)
 		if err != nil {
@@ -215,7 +216,12 @@ func (a App) Index(ctx context.Context, dir string, modulesOnly bool, arcMode st
 			}
 			ds = append(ds, m.Descriptor)
 			if e.Version != "" {
-				reg = append(reg, arcEntry(m))
+				ae, err := arcEntry(m)
+				if err != nil {
+					skipped = append(skipped, "arc: "+m.Name+" not registered: "+err.Error())
+					continue
+				}
+				reg = append(reg, ae)
 			}
 		}
 	}
@@ -231,19 +237,23 @@ func (a App) Index(ctx context.Context, dir string, modulesOnly bool, arcMode st
 	}
 	res := IndexResult{Written: written, Modules: len(ds), Arc: arc, Warning: warn}
 	if arc {
-		res.Warnings = arcreg.Sync(dir, reg)
+		res.Warnings = append(skipped, arcreg.Sync(dir, reg)...)
 	}
 	return res, nil
 }
 
 // arcEntry maps an installed module's descriptor to its arc registry entry.
 // Godot modules own addons/<Name>; go modules are imported by path.
-func arcEntry(m catalog.Module) arcreg.Entry {
+func arcEntry(m catalog.Module) (arcreg.Entry, error) {
 	d := m.Descriptor
 	e := arcreg.Entry{ID: m.Name, Summary: d.Summary, Covers: d.Replaces, Entry: d.Entry}
-	if d.Ecosystem == "godot-csharp" {
+	if d.Ecosystem == descriptor.GodotCSharp {
 		e.Paths = []string{"addons/" + m.Name + "/**"}
-	} else if p, err := install.GoModulePath(d.Install); err == nil {
+	} else {
+		p, err := install.GoModulePath(d.Install)
+		if err != nil {
+			return arcreg.Entry{}, err
+		}
 		e.Import = p
 	}
 	rules := []string{"Print `" + d.Liveness + "` at startup."}
@@ -251,7 +261,7 @@ func arcEntry(m catalog.Module) arcreg.Entry {
 		rules = append(rules, "Setup: "+strings.Join(d.Setup, "; ")+".")
 	}
 	e.Rules = []string{strings.Join(rules, " ")}
-	return e
+	return e, nil
 }
 
 // LoadProjectMsg turns a project.Load error into the CLI message.
