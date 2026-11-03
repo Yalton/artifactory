@@ -72,6 +72,7 @@ CHECKER_TIMEOUT_S = 3600
 PASS_BAR = 4
 
 ROADMAPS = ("none", "frontier", "ornith")
+BD_TIMEOUT_S = 120  # one host-side bd call; a hung bd must not end the trial's bookkeeping silently
 WRITING_LIMIT_S = 1200  # the ornith writing phase's share of the trial budget, at most
 QUICK_SESSION_S = 60    # a loop session shorter than this, with no bead status change, is "quick"
 STALL_RUN = 3           # this many quick sessions in a row stop the loop (a dead model server)
@@ -248,7 +249,11 @@ def bd_run(project: Path, env: dict, *args) -> subprocess.CompletedProcess:
     """Run bd in `project` with `env`, host-side. env must carry bd_env's values; PATH defaults to the host's (bd runs git)."""
     if "HOME" not in env:  # never fall back to the user's HOME: bd would write ~/.beads there
         raise ValueError("bd_run needs HOME in env (see bd_env)")
-    return subprocess.run([str(bd_binary()), *args], cwd=project, env={"PATH": os.environ["PATH"], **env}, capture_output=True, text=True)
+    try:
+        return subprocess.run([str(bd_binary()), *args], cwd=project, env={"PATH": os.environ["PATH"], **env},
+                              capture_output=True, text=True, timeout=BD_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"bd {' '.join(args[:2])} timed out after {BD_TIMEOUT_S} s") from None
 
 
 def _product_setup(test: AcceptanceTest, cli: Path, project: Path, home: Path, bin_dir: Path,
@@ -495,7 +500,10 @@ def _writing_phase(trial: Trial, test: AcceptanceTest, sessions: _Sessions) -> i
         sessions.run(test.roadmap_prompt, WRITING_LIMIT_S)
     finally:
         brief.unlink(missing_ok=True)
-    return len(_export(trial, trial.dir / "roadmap.jsonl"))
+    try:
+        return len(_export(trial, trial.dir / "roadmap.jsonl"))
+    except (RuntimeError, ValueError, OSError):  # unreadable beads are no roadmap: the brief fallback applies
+        return 0
 
 
 def bead_loop(trial: Trial, sessions: _Sessions, out: RoadmapOutcome) -> None:
@@ -563,7 +571,7 @@ def run_agent(trial: Trial, test: AcceptanceTest, opencode_argv: list[str] | Non
         else:
             bead_loop(trial, sessions, out)
         final = _export(trial, trial.dir / "beads-final.jsonl")
-    except RuntimeError as e:
+    except (RuntimeError, ValueError, OSError) as e:
         out.bd_error = str(e)
         final = []
     out.beads = len(final)

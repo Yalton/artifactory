@@ -694,3 +694,40 @@ def test_cli_round_roadmap_choices():
     from artifactory.cli import main
     with pytest.raises(SystemExit):
         main(["round", "x", "--roadmap", "bogus"])
+
+
+def test_bd_run_timeout_is_a_clear_runtime_error(tmp_path, monkeypatch):
+    fake = tmp_path / "bd"
+    fake.write_text("#!/bin/sh\nsleep 30\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(harness, "bd_binary", lambda: fake)
+    monkeypatch.setattr(harness, "BD_TIMEOUT_S", 1)
+    with pytest.raises(RuntimeError, match="timed out after 1 s"):
+        harness.bd_run(tmp_path, harness.bd_env("test", tmp_path), "export")
+
+
+@pytest.mark.parametrize("exc", [ValueError("bad json"), OSError("disk gone")])
+def test_bead_loop_failures_beyond_runtime_error_are_recorded_as_bd_error(tmp_path, monkeypatch, exc):
+    trial = prepare_trial(GO_TEST, "# index", tmp_path / "trial-1", None, None)
+    def boom(*a, **k):
+        raise exc
+    monkeypatch.setattr(harness, "bead_loop", boom)
+    monkeypatch.setattr(harness, "_export", lambda trial, dest: [])
+    test = dataclasses.replace(LANTERN, time_limit_s=30)
+    timed_out, out = harness.run_agent(trial, test, fake_agent("true"), "frontier")
+    assert out.bd_error == str(exc) and out.beads == 0
+
+
+def test_export_failure_after_the_writing_phase_falls_back_to_the_brief(tmp_path, monkeypatch):
+    trial = prepare_trial(GO_TEST, "# index", tmp_path / "trial-1", None, None)
+    calls = []
+    def flaky(trial, dest):
+        calls.append(dest.name)
+        if len(calls) == 1:
+            raise RuntimeError("bd export failed")
+        return []
+    monkeypatch.setattr(harness, "_export", flaky)
+    test = dataclasses.replace(LANTERN, time_limit_s=60)
+    timed_out, out = harness.run_agent(trial, test, fake_agent("true"), "ornith")
+    assert out.roadmap_failed and out.sessions == 1 and out.bd_error is None
+    assert calls == ["roadmap.jsonl", "beads-final.jsonl"]
