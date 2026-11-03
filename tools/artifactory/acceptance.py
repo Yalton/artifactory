@@ -16,10 +16,13 @@ class AcceptanceTest:
     modules: list[str]
     time_limit_s: int
     duplication: dict[str, list[str]]
+    roadmap_prompt: str | None = None
+    probe: str | None = None
+    dir: Path = Path(".")
 
 
 def load_acceptance(dir: Path) -> AcceptanceTest:
-    dir = Path(dir)
+    dir = Path(dir).resolve()
     cfg = yaml.safe_load((dir / "test.yaml").read_text())
     dup = yaml.safe_load((dir / "duplication.yaml").read_text()) or {}
     return AcceptanceTest(
@@ -30,4 +33,7 @@ def load_acceptance(dir: Path) -> AcceptanceTest:
         modules=list(cfg["modules"]),
         time_limit_s=int(cfg["time_limit_s"]),
         duplication={k: list(v) for k, v in dup.items()},
+        roadmap_prompt=(dir / cfg["roadmap_prompt"]).read_text() if cfg.get("roadmap_prompt") else None,
+        probe=cfg.get("probe"),
+        dir=dir,
     )

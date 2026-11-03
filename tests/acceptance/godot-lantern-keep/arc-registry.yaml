@@ -1,0 +1,37 @@
+# arc registry the harness installs in each --arc trial (arc's built-in ignores already cover
+# .arch/**, ARCHITECTURE.md, AGENTS.md, .claude/**, .codex/**, .opencode/** and .gitmodules).
+version: 1
+
+system:
+  name: lantern-keep
+  summary: |
+    A small Godot C# game built from the installed kit modules.
+
+non_goals: []
+
+ignore:
+  - ".godot/**"
+  - "bin/**"
+  - "obj/**"
+  - "*.uid"
+  - "*.md"
+  - "artifactory.yaml"
+
+concepts:
+  - id: game
+    name: Game
+    summary: The game project itself, everything outside the installed modules.
+    paths: ["**"]
+    reason: The one game under construction; installed kit modules own their own paths.
+
+boundaries: []
+flags: []
+removals: []
+
+limits:
+  file_lines: 1000
+  function_lines: 150
+
+checks: []
+
+beads: false
