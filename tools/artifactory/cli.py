@@ -81,6 +81,22 @@ def cmd_roadmap_export(args) -> int:
     return 0
 
 
+def cmd_roadmap_score(args) -> int:
+    import json
+
+    from .acceptance import load_acceptance
+    from .roadmap import CONTRACTS, format_score, score_roadmap
+
+    kits = load_acceptance(Path(args.test)).modules
+    try:
+        score = score_roadmap(Path(args.file), kits, CONTRACTS)
+    except (OSError, ValueError) as e:
+        print(f"roadmap-score: {e}", file=sys.stderr)
+        return 1
+    print(json.dumps(score, indent=2) if args.json else format_score(score, kits))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="artifactory")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -120,6 +136,12 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("project")
     e.add_argument("output")
     e.set_defaults(func=cmd_roadmap_export)
+    s = sub.add_parser("roadmap-score", help="score an exported roadmap: kits named, unknown modules, contracts, gap coverage")
+    s.add_argument("file")
+    s.add_argument("--test", default=str(Path(__file__).resolve().parents[2] / "tests" / "acceptance" / "godot-lantern-keep"),
+                   help="acceptance test directory whose modules are the kits (default: godot-lantern-keep)")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_roadmap_score)
     args = parser.parse_args(argv)
     return args.func(args)
 

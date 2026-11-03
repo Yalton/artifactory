@@ -95,6 +95,14 @@ When a roadmap is written, each bead names the modules it uses, or says it uses 
 
 `artifactory round TEST_DIR --product` runs the trials through the CLI as above. Adding `--arc` installs arc in each trial (registry and opencode plugin, built from `--arc-src DIR` or `$ARC_SRC`), and the checker reports `arc_gate`. `arc_gate` is informational: it never decides `passed`. The result also records `arc_denials`, the number of edits the arc hook refused, counted from the trial transcript, and `arc_hook_live`, true when arc's hook left session state (`.arch/cache/hook-*.json`) in the trial project. A false `arc_hook_live` means the hook never ran, so a zero `arc_denials` says nothing. Both are informational. `check --arc --arc-base COMMIT` reports the gate for one trial project (Godot).
 
+Roadmap conditions (design: `2026-11-03-roadmap-experiment-design.md`) add `--roadmap none|frontier|ornith` to `round`; it needs `--product --arc`. `frontier` imports the frozen roadmap `<test dir>/roadmaps/frontier.jsonl` into bd in each trial and the build loop works its beads. `ornith` has the local model write the roadmap first from the brief, then runs the same loop. `none` is one session with the brief.
+
+Three helper commands support the frontier roadmap:
+
+- `artifactory roadmap-workspace TEST_DIR OUT_DIR [--arc-src DIR]` prepares a product+arc project with bd (actor `roadmap-writer`) and no roadmap, plus `BRIEF.md` and `ROADMAP-PROMPT.md`, for the writer session. It prints the workspace and the env prefix to run bd with.
+- `artifactory roadmap-export PROJECT OUTPUT` exports the writer's beads to a jsonl file. It refuses, and leaves any existing OUTPUT in place, if a bead is `in_progress`, is assigned to someone other than `roadmap-writer`, or was not created by `roadmap-writer` (`bd q` leaves the author empty).
+- `artifactory roadmap-score FILE [--test DIR] [--json]` reads an export and reports bead counts by status, which of the test's kits the `Modules:` lines name, names that are not modules, beads with no `Modules:` line, whether a `gap` bead covers dialogue, and which brief contracts appear as whole words in descriptions. It does not judge whether a bead reimplements a kit's job; that is read by hand.
+
 ## Constraints
 
 - Language: Go, single static binary, the same as arc. It installs with `go install` from this repository (`repo.billbert.co/artifactory/artifactory/cmd/artifactory`). The Python harness and its checkers stay in Python.

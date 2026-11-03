@@ -84,3 +84,7 @@ Unproven:
 ```
 cd results/godot-capsule-room/round-6/trial-1/project && dotnet build && godot --path .
 ```
+
+## Roadmap experiment
+
+Planned, no results yet. It tests whether a roadmap of beads written by a frontier model, or by the local model, changes what the build session does with the kits. Design: `docs/superpowers/specs/2026-11-03-roadmap-experiment-design.md`. Harness commands are in `docs/superpowers/specs/2026-11-02-artifactory-cli-design.md` under "The harness".
