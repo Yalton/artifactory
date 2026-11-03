@@ -60,7 +60,7 @@ func runInit(out *output, args []string) int {
 			fmt.Fprintln(out.stdout, "wrote "+p)
 		}
 	}
-	return writeIndex(out, *dir, false)
+	return writeIndex(out, *dir, false, app.ArcAuto)
 }
 
 // skillHarnessDirs are the agent harness folders that receive the skill.
@@ -129,7 +129,7 @@ func runAdd(out *output, args []string) int {
 	if err := project.Save(*dir, f); err != nil {
 		return out.fail(exitUsage, err.Error())
 	}
-	return writeIndex(out, *dir, false)
+	return writeIndex(out, *dir, false, app.ArcAuto)
 }
 
 // runIndex rewrites MODULES.md and the AGENTS.md block.
@@ -137,15 +137,16 @@ func runIndex(out *output, args []string) int {
 	fs := newFlags("index")
 	dir := fs.String("project", ".", "project directory")
 	only := fs.Bool("modules-only", false, "write MODULES.md only")
+	arc := fs.String("arc", app.ArcAuto, "arc mode: auto, on or off")
 	if err := fs.Parse(args); err != nil || fs.NArg() > 0 {
-		return out.fail(exitUsage, "usage: artifactory index [--project DIR] [--modules-only]")
+		return out.fail(exitUsage, "usage: artifactory index [--project DIR] [--modules-only] [--arc auto|on|off]")
 	}
-	return writeIndex(out, *dir, *only)
+	return writeIndex(out, *dir, *only, *arc)
 }
 
 // writeIndex re-indexes the project and prints the result.
-func writeIndex(out *output, dir string, modulesOnly bool) int {
-	res, err := app.App{Refresh: refreshCache}.Index(context.Background(), dir, modulesOnly)
+func writeIndex(out *output, dir string, modulesOnly bool, arcMode string) int {
+	res, err := app.App{Refresh: refreshCache}.Index(context.Background(), dir, modulesOnly, arcMode)
 	if err != nil {
 		return out.fail(app.Code(err), err.Error())
 	}
@@ -154,6 +155,9 @@ func writeIndex(out *output, dir string, modulesOnly bool) int {
 }
 
 func printIndex(out *output, res app.IndexResult) {
+	if res.Warning != "" && !out.json {
+		fmt.Fprintln(out.stderr, "artifactory: warning: "+res.Warning)
+	}
 	out.result("wrote "+strings.Join(res.Written, ", "), res)
 }
 

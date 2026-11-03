@@ -37,7 +37,7 @@ func TestRenderMatchesPythonGolden(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := Render(tt.eco, loadAll(t, tt.dir)); got != string(want) {
+			if got := Render(tt.eco, loadAll(t, tt.dir), Options{}); got != string(want) {
 				t.Errorf("Render differs from %s", tt.golden)
 			}
 		})
@@ -50,7 +50,7 @@ func TestWriteAgentsBlockIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
-		if err := WriteAgents(path, AgentsBlock("go")); err != nil {
+		if err := WriteAgents(path, AgentsBlock("go", Options{})); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -64,5 +64,71 @@ func TestWriteAgentsBlockIsIdempotent(t *testing.T) {
 	}
 	if !strings.Contains(s, "See MODULES.md for the modules in scope and their install commands.") {
 		t.Errorf("pointer line missing")
+	}
+}
+
+var arcBullets = []string{
+	"- If a module here does what you need",
+	"- Never edit files inside an installed module",
+	"- Wire every module you install",
+}
+
+var keptBullets = []string{
+	"- Install a module only with its `install` command.",
+	"- Before finishing, build and run",
+	"- The Wiring section of the module's README",
+	"- When the Before-finishing checks pass, stop.",
+}
+
+func TestArcDropsModuleBullets(t *testing.T) {
+	ds := loadAll(t, "../../samples/go")
+	for name, got := range map[string]string{
+		"MODULES.md": Render("go", ds, Options{Arc: true}),
+		"AGENTS.md":  AgentsBlock("go", Options{Arc: true}),
+	} {
+		for _, b := range arcBullets {
+			if strings.Contains(got, b) {
+				t.Errorf("%s: arc bullet kept: %s", name, b)
+			}
+		}
+		for _, b := range keptBullets {
+			if !strings.Contains(got, b) {
+				t.Errorf("%s: bullet dropped: %s", name, b)
+			}
+		}
+		if strings.Contains(got, "<!-- arc -->") {
+			t.Errorf("%s: marker leaked", name)
+		}
+	}
+	if off := AgentsBlock("go", Options{}); strings.Contains(off, "<!-- arc -->") || !strings.Contains(off, arcBullets[0]) {
+		t.Errorf("arc off block wrong: %s", off)
+	}
+}
+
+func TestArcRenderMatchesGolden(t *testing.T) {
+	want, err := os.ReadFile("testdata/go.arc.golden.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := Render("go", loadAll(t, "../../samples/go"), Options{Arc: true}); got != string(want) {
+		t.Error("Render with Arc differs from testdata/go.arc.golden.md")
+	}
+}
+
+func TestCLIInstallLines(t *testing.T) {
+	ds := loadAll(t, "../../samples/go")
+	raw := Render("go", ds, Options{})
+	cli := Render("go", ds, Options{CLIInstall: true})
+	for _, d := range ds {
+		line := "```\nartifactory install " + d.Name + "\n```\n\n(runs: " + d.Install + ")\n"
+		if !strings.Contains(cli, line) {
+			t.Errorf("%s: CLI install lines missing", d.Name)
+		}
+		if strings.Contains(raw, "artifactory install") {
+			t.Errorf("raw render mentions the CLI")
+		}
+		if !strings.Contains(raw, "```\n"+d.Install+"\n```\n") {
+			t.Errorf("%s: raw install line missing", d.Name)
+		}
 	}
 }

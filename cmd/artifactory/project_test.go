@@ -131,3 +131,95 @@ func TestRelativeDirProviderResolvesAgainstProject(t *testing.T) {
 		t.Errorf("MODULES.md:\n%s", md)
 	}
 }
+
+// fakeArcOnPath puts an `arc` script that exits with code on PATH.
+func fakeArcOnPath(t *testing.T, code string) {
+	t.Helper()
+	bin := t.TempDir()
+	script := "#!/bin/sh\necho '{\"modules\":[]}'\nexit " + code + "\n"
+	if err := os.WriteFile(filepath.Join(bin, "arc"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func indexProject(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "project.godot"), nil, 0o644)
+	if code, _, se := runCmd("init", "--project", dir, "--provider", "dir:"+kitsDir(t)); code != 0 {
+		t.Fatalf("init: %d %s", code, se)
+	}
+	if code, _, se := runCmd("add", "CrashKit", "--project", dir); code != 0 {
+		t.Fatalf("add: %d %s", code, se)
+	}
+	return dir
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func TestFullIndexUsesCLIInstallLines(t *testing.T) {
+	dir := indexProject(t)
+	md := readFile(t, filepath.Join(dir, "MODULES.md"))
+	if !strings.Contains(md, "```\nartifactory install CrashKit\n```\n\n(runs: ") {
+		t.Errorf("full index lacks CLI install line:\n%s", md)
+	}
+	if code, _, _ := runCmd("index", "--project", dir, "--modules-only"); code != 0 {
+		t.Fatal("index --modules-only failed")
+	}
+	if md := readFile(t, filepath.Join(dir, "MODULES.md")); strings.Contains(md, "artifactory install") {
+		t.Errorf("--modules-only should keep raw install lines:\n%s", md)
+	}
+}
+
+func TestIndexArcModes(t *testing.T) {
+	dir := indexProject(t)
+	os.MkdirAll(filepath.Join(dir, ".arch"), 0o755)
+	os.WriteFile(filepath.Join(dir, ".arch", "registry.yaml"), []byte("concepts: []\n"), 0o644)
+	const arcBullet = "Never edit files inside an installed module"
+
+	fakeArcOnPath(t, "0")
+	code, so, se := runCmd("index", "--project", dir, "--json")
+	if code != 0 || !strings.Contains(so, `"arc": true`) {
+		t.Fatalf("auto with arc: %d %q %q", code, so, se)
+	}
+	for _, f := range []string{"MODULES.md", "AGENTS.md"} {
+		if strings.Contains(readFile(t, filepath.Join(dir, f)), arcBullet) {
+			t.Errorf("%s keeps the arc bullet", f)
+		}
+	}
+
+	code, so, _ = runCmd("index", "--project", dir, "--arc", "off", "--json")
+	if code != 0 || !strings.Contains(so, `"arc": false`) {
+		t.Fatalf("off: %d %q", code, so)
+	}
+	if !strings.Contains(readFile(t, filepath.Join(dir, "AGENTS.md")), arcBullet) {
+		t.Errorf("--arc off should keep the full preamble")
+	}
+
+	// An arc too old for `module list` warns and keeps the full preamble.
+	fakeArcOnPath(t, "2")
+	code, so, se = runCmd("index", "--project", dir)
+	if code != 0 || !strings.Contains(se, "module rules not registered") || !strings.Contains(readFile(t, filepath.Join(dir, "AGENTS.md")), arcBullet) {
+		t.Errorf("old arc: %d %q %q", code, so, se)
+	}
+}
+
+func TestIndexArcOnWithoutArcExits2(t *testing.T) {
+	dir := indexProject(t)
+	t.Setenv("PATH", t.TempDir())
+	code, _, se := runCmd("index", "--project", dir, "--arc", "on")
+	if code != 2 || !strings.Contains(se, "--arc on") {
+		t.Errorf("code=%d stderr=%q", code, se)
+	}
+	if code, _, _ := runCmd("index", "--project", dir, "--arc", "bogus"); code != 2 {
+		t.Errorf("bad mode exit %d, want 2", code)
+	}
+}

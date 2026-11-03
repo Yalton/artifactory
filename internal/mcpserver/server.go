@@ -71,7 +71,7 @@ func New(a app.App, projectDir string) *mcp.Server {
 		Name:        "index",
 		Description: "Rewrite MODULES.md and the AGENTS.md block from the project's modules. Modifies the project.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ IndexInput) (*mcp.CallToolResult, any, error) {
-		res, err := a.Index(ctx, projectDir, false)
+		res, err := a.Index(ctx, projectDir, false, app.ArcAuto)
 		return reply(res, err)
 	})
 	return s
