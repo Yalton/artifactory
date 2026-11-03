@@ -6,9 +6,10 @@ import re
 from collections import Counter
 from pathlib import Path
 
-# The brief's checker contracts; each is looked for as a whole word in bead descriptions.
-CONTRACTS = ["player", "keeper", "dialogue", "res://rooms/courtyard.tscn", "res://rooms/hall.tscn",
-             "res://rooms/tower.tscn", "interact"]
+# The brief's checker contracts as the brief writes them (group and action names keep their
+# backticks, so plain prose such as "the player" does not count as a copied contract).
+CONTRACTS = ["`player`", "`keeper`", "`dialogue`", "res://rooms/courtyard.tscn", "res://rooms/hall.tscn",
+             "res://rooms/tower.tscn", "`interact`"]
 
 _MODULES_LINE = re.compile(r"^\s*Modules:[ \t]*(.*)$", re.MULTILINE)
 

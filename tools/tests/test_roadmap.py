@@ -50,13 +50,13 @@ def test_gap_bead_covering_dialogue(tmp_path):
     assert score_roadmap(no, KITS, CONTRACTS)["gap_covers_dialogue"] is False
 
 
-def test_contracts_match_whole_words_only(tmp_path):
+def test_contracts_match_copied_contract_text_only(tmp_path):
     f = write(tmp_path / "r.jsonl", [
-        bead("a", "Add a player in res://rooms/hall.tscn.\nModules: none"),
-        bead("b", "The players and keeperless interaction.\nModules: none"),
+        bead("a", "The player node is in the group `player`, placed in res://rooms/hall.tscn.\nModules: none"),
+        bead("b", "The keeper waits; press interact to talk. `players` is not a contract.\nModules: none"),
     ])
     s = score_roadmap(f, KITS, CONTRACTS)
-    assert s["contracts"] == ["player", "res://rooms/hall.tscn"]
+    assert s["contracts"] == ["`player`", "res://rooms/hall.tscn"]
 
 
 def test_cli_prints_text_and_json(tmp_path, capsys):
