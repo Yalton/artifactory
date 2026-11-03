@@ -29,7 +29,8 @@ def cmd_check(args) -> int:
 def cmd_round(args) -> int:
     from .harness import run_round
 
-    result = run_round(Path(args.test_dir), args.round, trials=args.trials, baseline=args.baseline)
+    result = run_round(Path(args.test_dir), args.round, trials=args.trials, baseline=args.baseline,
+                       product=args.product)
     print(f"{result.test} {'baseline' if args.baseline else f'round {result.round}'}: "
           f"{result.passes}/{len(result.results)} passed; bar {'met' if result.met_bar else 'not met'}")
     return 0
@@ -60,6 +61,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--round", type=int, default=0)
     r.add_argument("--trials", type=int, default=5)
     r.add_argument("--baseline", action="store_true", help="plain README index, kits checked against main")
+    r.add_argument("--product", action="store_true",
+                   help="run the artifactory CLI in the sandbox (dir: provider on the local mirrors)")
     r.set_defaults(func=cmd_round)
     m = sub.add_parser("mirror", help="refresh bare mirrors of the Godot kits into results/mirrors/")
     m.set_defaults(func=cmd_mirror)

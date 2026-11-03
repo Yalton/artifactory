@@ -72,6 +72,7 @@ class RoundResult:
     test: str
     round: int
     results: list[TrialResult] = field(default_factory=list)
+    product: bool = False
 
     @property
     def passes(self) -> int:
@@ -85,6 +86,7 @@ class RoundResult:
         return json.dumps({
             "test": self.test,
             "round": self.round,
+            "product": self.product,
             "passes": self.passes,
             "met_bar": self.met_bar,
             "trials": [json.loads(r.to_json()) for r in self.results],
@@ -194,9 +196,26 @@ def _tool_binds(mirrors: Path | None, proxy: Path | None, bin_dir: Path) -> list
     return binds
 
 
+def _product_setup(test: AcceptanceTest, cli: Path, project: Path, home: Path, bin_dir: Path,
+                   mirrors: Path | None, env: dict[str, str]) -> None:
+    """Put the CLI in the trial bin, point the project at the local mirrors and run `artifactory index`."""
+    if mirrors is None:
+        raise ValueError("--product needs local kit mirrors")
+    shutil.copy2(cli, bin_dir / "artifactory")
+    config = {"ecosystem": test.ecosystem, "provider": f"dir:{mirrors}",
+              "modules": [{"name": m} for m in test.modules]}
+    (project / "artifactory.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
+    r = subprocess.run([str(bin_dir / "artifactory"), "index", "--project", str(project), "--arc", "off"],
+                       capture_output=True, text=True, env={**env, "HOME": str(home)})
+    if r.returncode != 0:
+        raise RuntimeError(f"artifactory index failed ({r.returncode}): {r.stderr.strip() or r.stdout.strip()}")
+
+
 def prepare_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors: Path | None,
-                  proxy: Path | None) -> Trial:
-    """Create project (fixture + MODULES.md, committed), HOME and the godot launcher."""
+                  proxy: Path | None, cli: Path | None = None) -> Trial:
+    """Create project (fixture + MODULES.md, committed), HOME and the godot launcher.
+
+    With `cli` (product mode) the CLI is copied into the trial bin and writes MODULES.md itself."""
     trial_dir = Path(trial_dir).resolve()
     if trial_dir.exists():
         raise FileExistsError(f"{trial_dir} already exists; remove it to rerun the trial")
@@ -205,20 +224,24 @@ def prepare_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors:
     project, home, bin_dir = trial_dir / "project", trial_dir / "home", trial_dir / "bin"
     trial_dir.mkdir(parents=True)
     shutil.copytree(test.fixture, project, symlinks=True)
-    (project / "MODULES.md").write_text(index_md)
+    home.mkdir()
+    _write_home(home, mirrors)
+    bin_dir.mkdir()
+    env = _base_env(home, bin_dir, proxy)
+    if cli is not None:
+        _product_setup(test, Path(cli), project, home, bin_dir, mirrors, env)
+    else:
+        (project / "MODULES.md").write_text(index_md)
     _git("init", "-q", "-b", "main", cwd=project)
     _git("add", "-A", cwd=project)
     _git("-c", f"user.name={TRIAL_NAME}", "-c", f"user.email={TRIAL_EMAIL}", "-c", "commit.gpgsign=false",
          "commit", "-qm", "Initial project", cwd=project)
-    home.mkdir()
-    _write_home(home, mirrors)
-    bin_dir.mkdir()
     # A script, never a symlink: a symlinked Godot deadlocks headless.
     launcher = bin_dir / "godot"
     launcher.write_text(f'#!/bin/sh\nexec "{GODOT_BINARY}" "$@"\n')
     launcher.chmod(0o755)
     return Trial(trial_dir, project, home, bin_dir, mirrors, proxy,
-                 _base_env(home, bin_dir, proxy), _tool_binds(mirrors, proxy, bin_dir))
+                 env, _tool_binds(mirrors, proxy, bin_dir))
 
 
 # --- running ---------------------------------------------------------------
@@ -321,9 +344,9 @@ def run_checker(trial: Trial, test: AcceptanceTest, test_dir: Path, branch: str,
 
 def run_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors: Path | None, proxy: Path | None,
               opencode_argv: list[str] | None = None, *, test_dir: Path | None = None,
-              branch: str = STITCH_BRANCH, baseline: bool = False) -> TrialResult:
+              branch: str = STITCH_BRANCH, baseline: bool = False, cli: Path | None = None) -> TrialResult:
     """Set up the trial, run the agent sandboxed until done or time_limit_s, then check it sandboxed."""
-    trial = prepare_trial(test, index_md, trial_dir, mirrors, proxy)
+    trial = prepare_trial(test, index_md, trial_dir, mirrors, proxy, cli)
     argv = opencode_argv if opencode_argv is not None else opencode_command(test.prompt)
     finished = _run_sandboxed(agent_command(trial, argv), trial.dir / "transcript.jsonl",
                               trial.dir / "opencode.log", test.time_limit_s)
@@ -365,11 +388,14 @@ def _go_sample_dirs() -> list[Path]:
 
 
 def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = False, *,
-              results_root: Path | None = None, opencode_argv: list[str] | None = None) -> RoundResult:
+              results_root: Path | None = None, opencode_argv: list[str] | None = None,
+              product: bool = False) -> RoundResult:
     test_dir = Path(test_dir).resolve()
     test = load_acceptance(test_dir)
     root = Path(results_root or RESULTS).resolve()
-    mirrors = proxy = None
+    mirrors = proxy = cli = None
+    if product and (baseline or test.ecosystem == "go"):
+        raise ValueError("--product is defined for non-baseline Godot rounds only")
     branch = BASELINE_BRANCH if baseline else STITCH_BRANCH
     if test.ecosystem == "go":
         if baseline:
@@ -390,15 +416,18 @@ def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = F
                 raise RuntimeError(f"no mirror at {mirrors / (name + '.git')}; run `artifactory mirror` first")
         if baseline:
             index_md = BASELINE_README.read_text()
+        elif product:
+            cli = build_cli(root)
+            index_md = ""  # the CLI renders MODULES.md in each trial
         else:
             index_md = render_index(build_cli(root), test.ecosystem, f"dir:{mirrors}", test.modules)
 
     out = root / test.name / ("baseline" if baseline else f"round-{round_no}")
     out.mkdir(parents=True, exist_ok=True)
-    result = RoundResult(test.name, round_no)
+    result = RoundResult(test.name, round_no, product=product)
     for k in range(1, trials + 1):
         tr = run_trial(test, index_md, out / f"trial-{k}", mirrors, proxy, opencode_argv,
-                       test_dir=test_dir, branch=branch, baseline=baseline)
+                       test_dir=test_dir, branch=branch, baseline=baseline, cli=cli)
         result.results.append(tr)
         (out / "round.json").write_text(result.to_json())
     (out / "round.json").write_text(result.to_json())
