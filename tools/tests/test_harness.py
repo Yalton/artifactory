@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -278,3 +279,96 @@ def test_product_install_uses_mirror_without_network(cli, tmp_path):
     r = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=300)
     assert r.returncode == 0, r.stdout + r.stderr
     assert (trial.project / "addons" / "CursorKit").is_dir()
+
+
+def test_failing_arc_gate_does_not_fail_a_trial():
+    gate = CheckResult("arc_gate", False, "1 error(s)", gating=False)
+    r = TrialResult("t", "trial-1", [CheckResult("build", True, ""), gate])
+    assert r.passed
+    assert json.loads(r.to_json())["checks"][1]["gating"] is False
+    assert not TrialResult("t", "trial-1", [CheckResult("build", False, "")]).passed
+
+
+def test_denial_counter_counts_recorded_transcript(tmp_path):
+    t = tmp_path / "transcript.jsonl"
+    reason = "addons/CursorKit/Cursor.cs is inside installed module CursorKit; do not edit it."
+    t.write_text(json.dumps({"type": "tool_use", "state": {"error": reason}}) + "\n"
+                 + json.dumps({"type": "text", "text": "ok"}) + "\n")
+    assert harness.count_denials(t) == 1
+    assert harness.count_denials(tmp_path / "missing.jsonl") == 0
+
+
+def test_round_json_records_arc():
+    assert json.loads(RoundResult("t", 1, product=True, arc=True).to_json())["arc"] is True
+    assert json.loads(RoundResult("t", 1).to_json())["arc"] is False
+
+
+def test_arc_requires_product(tmp_path):
+    with pytest.raises(ValueError, match="--product"):
+        harness.run_round(ROOT / "tests" / "acceptance" / "godot-capsule-room", 1, arc=True,
+                          results_root=tmp_path)
+    with pytest.raises(ValueError, match="--product"):
+        prepare_trial(GODOT_TEST, "", tmp_path / "t", None, None, arc=tmp_path / "arc")
+
+
+@pytest.mark.godot
+def test_arc_trial_installs_registry_plugin_and_registers_modules(cli, tmp_path):
+    src = os.environ.get("ARC_SRC")
+    real = harness.RESULTS / "mirrors"
+    if not src or not Path(src).is_dir():
+        pytest.skip("ARC_SRC is not set")
+    if not all((real / f"{m}.git").is_dir() for m in GODOT_TEST.modules):
+        pytest.skip("results/mirrors lacks the godot kits; run `artifactory mirror`")
+    arc = harness.build_arc(tmp_path / "arcbuild", Path(src))
+    mirrors = tmp_path / "mirrors"
+    for m in GODOT_TEST.modules:
+        shutil.copytree(real / f"{m}.git", mirrors / f"{m}.git")
+        git("--git-dir", str(mirrors / f"{m}.git"), "tag", "-f", "v0.1.0", "main", cwd=tmp_path)
+    trial = prepare_trial(GODOT_TEST, "", tmp_path / "trial-1", mirrors, None, cli=cli, arc=arc)
+    project = trial.project
+    assert "id: game" in (project / ".arch" / "registry.yaml").read_text()
+    assert (project / ".opencode" / "plugins" / "arc.js").is_file()
+    assert not (project / ".git" / "hooks" / "pre-commit").exists()
+    assert trial.base_commit == git("rev-parse", "HEAD", cwd=project).strip()
+    assert git("status", "--porcelain", cwd=project) == ""
+
+    def sandboxed(*argv):
+        return subprocess.run(harness.agent_command(trial, list(argv)), capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL, timeout=300)
+    r = sandboxed("artifactory", "install", "CursorKit")
+    assert r.returncode == 0, r.stdout + r.stderr
+    r = sandboxed("arc", "module", "list")
+    assert "CursorKit" in r.stdout, r.stdout + r.stderr
+    r = sandboxed("arc", "validate")
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+@pytest.mark.godot
+def test_arc_gate_check_reports_findings_without_gating(cli, tmp_path):
+    from artifactory.checks.godot import _check_arc_gate
+    src = os.environ.get("ARC_SRC")
+    real = harness.RESULTS / "mirrors"
+    if not src or not Path(src).is_dir():
+        pytest.skip("ARC_SRC is not set")
+    if not all((real / f"{m}.git").is_dir() for m in GODOT_TEST.modules):
+        pytest.skip("results/mirrors lacks the godot kits; run `artifactory mirror`")
+    arc = harness.build_arc(tmp_path / "arcbuild", Path(src))
+    mirrors = tmp_path / "mirrors"
+    for m in GODOT_TEST.modules:
+        shutil.copytree(real / f"{m}.git", mirrors / f"{m}.git")
+        git("--git-dir", str(mirrors / f"{m}.git"), "tag", "-f", "v0.1.0", "main", cwd=tmp_path)
+    trial = prepare_trial(GODOT_TEST, "", tmp_path / "trial-1", mirrors, None, cli=cli, arc=arc)
+    old = os.environ["PATH"]
+    os.environ["PATH"] = f"{trial.bin}:{old}"
+    try:
+        clean = _check_arc_gate(trial.project, trial.base_commit)
+        (trial.project / "Player.cs").write_text("class Player {}\n")
+        (trial.project / "lib").mkdir()
+        (trial.project / "lib" / "x.cs").write_text("class X {}\n")
+        git("add", "-A", cwd=trial.project)
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "work", cwd=trial.project)
+        after = _check_arc_gate(trial.project, trial.base_commit)
+    finally:
+        os.environ["PATH"] = old
+    assert clean.name == "arc_gate" and clean.passed and not clean.gating, clean
+    assert not after.gating and after.detail.startswith("0 error(s)"), after

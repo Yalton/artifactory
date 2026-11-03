@@ -6,6 +6,7 @@ probe is added and the project is built and run.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -39,7 +40,7 @@ _Proc = Proc
 
 
 def check_godot(project: Path, test: AcceptanceTest, mirrors: Path, branch: str,
-                baseline: bool = False) -> TrialResult:
+                baseline: bool = False, arc_base: str | None = None) -> TrialResult:
     project = Path(project).resolve()
     mirrors = Path(mirrors).resolve()
     with tempfile.TemporaryDirectory(prefix="artifactory-godot-") as tmp:
@@ -49,6 +50,7 @@ def check_godot(project: Path, test: AcceptanceTest, mirrors: Path, branch: str,
         installed, installed_check = _check_installed(copy, test.modules)
         unmodified = _check_unmodified(copy, test.modules, installed, mirrors, branch)
         duplication = _check_duplication(copy, test, mirrors)
+        arc_gate = _check_arc_gate(copy, arc_base) if arc_base else None
 
         build, run = _build_and_run(copy, Path(tmp) / "logs")
         if run is None:
@@ -70,10 +72,35 @@ def check_godot(project: Path, test: AcceptanceTest, mirrors: Path, branch: str,
                                  f"manual: judge kit edits from the tree (automatic: {unmodified.detail})")
 
     checks = [build, runs, moves, visible, installed_check, live, unmodified, duplication]
+    if arc_gate is not None:
+        checks.append(arc_gate)
     return TrialResult(test=test.name, trial=project.name, checks=checks, reason=None)
 
 
 # --- static checks ---------------------------------------------------------
+
+ARC_GATE_TIMEOUT_S = 120
+
+
+def _check_arc_gate(project: Path, base: str) -> CheckResult:
+    """`arc gate --base <fixture commit> --json` with the trial's arc. Informational: never gates `passed`.
+
+    --base, not --all: --all has no change set and skips the vendored changed-file check."""
+    try:
+        r = subprocess.run(["arc", "gate", "--base", base, "--json"], cwd=project, capture_output=True,
+                           text=True, timeout=ARC_GATE_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return CheckResult("arc_gate", False, f"arc gate did not run: {type(e).__name__}", gating=False)
+    try:
+        rep = json.loads(r.stdout)
+        errors, warnings, findings = int(rep["errors"]), int(rep["warnings"]), rep.get("findings") or []
+    except (ValueError, KeyError, TypeError):
+        return CheckResult("arc_gate", False, f"arc gate exit {r.returncode}: {(r.stderr or r.stdout).strip()[-500:]}",
+                           gating=False)
+    detail = f"{errors} error(s), {warnings} warning(s)"
+    if findings:
+        detail += ": " + json.dumps(findings, separators=(",", ":"))[:2000]
+    return CheckResult("arc_gate", errors == 0, detail, gating=False)
 
 def _git(*args: str, cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
