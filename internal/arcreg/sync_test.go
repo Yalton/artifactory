@@ -165,3 +165,42 @@ func TestSyncStaleRemovalScopedToProject(t *testing.T) {
 		t.Errorf("top level removed %q, want all three", rms())
 	}
 }
+
+func TestSyncRelativeProjectDir(t *testing.T) {
+	list := `{"modules":[{"id":"BOld","summary":"x","source":"artifactory","paths":["b/addons/BOld/**"]}]}`
+	log := logFakeArc(t, list)
+	top := t.TempDir()
+	if b, err := exec.Command("git", "-C", top, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, b)
+	}
+	sub := filepath.Join(top, "sub")
+	os.MkdirAll(sub, 0o755)
+	os.MkdirAll(filepath.Join(top, "b"), 0o755)
+	t.Chdir(sub)
+	for _, dir := range []string{".", "../sub"} {
+		os.Remove(log)
+		Sync(dir, []Entry{{ID: "K", Summary: "x", Paths: []string{"addons/K/**"}}})
+		b, _ := os.ReadFile(log)
+		if !strings.Contains(string(b), "--path\tsub/addons/K/**") {
+			t.Errorf("dir %q: path not under sub: %q", dir, b)
+		}
+		for _, c := range calls(t, log) {
+			if c[1] == "rm" {
+				t.Errorf("dir %q: removed another project's entry %q", dir, c)
+			}
+		}
+	}
+}
+
+func TestSyncKeepLeavesEntryRegistered(t *testing.T) {
+	log := logFakeArc(t, `{"modules":[{"id":"Old","summary":"x","source":"artifactory","import":"example.com/x"}]}`)
+	n, _ := SyncCount(t.TempDir(), []Entry{{ID: "Old", Keep: true}})
+	for _, c := range calls(t, log) {
+		if c[1] == "rm" || c[1] == "set" {
+			t.Errorf("unexpected call %q", c)
+		}
+	}
+	if n != 1 {
+		t.Errorf("count %d, want 1", n)
+	}
+}

@@ -148,7 +148,8 @@ func (a App) Show(ctx context.Context, spec, projectDir, name string) (ShowResul
 type IndexResult struct {
 	Written []string `json:"written"`
 	Modules int      `json:"modules"`
-	// Arc is true when the preamble was rendered for a project that arc manages.
+	// Arc is true when the preamble was rendered without the bullets arc's own
+	// guidance replaces: arc is on and its registry holds a module.
 	Arc bool `json:"arc"`
 	// Warning is set when a registry exists but arc cannot be used.
 	Warning string `json:"warning,omitempty"`
@@ -196,7 +197,7 @@ func (a App) Index(ctx context.Context, dir string, modulesOnly bool, arcMode st
 	if err != nil {
 		return IndexResult{}, err
 	}
-	opt := index.Options{Arc: arc, CLIInstall: !modulesOnly}
+	opt := index.Options{CLIInstall: !modulesOnly}
 	var ds []descriptor.Descriptor
 	var reg []arcreg.Entry
 	var skipped []string
@@ -219,11 +220,20 @@ func (a App) Index(ctx context.Context, dir string, modulesOnly bool, arcMode st
 				ae, err := arcEntry(m)
 				if err != nil {
 					skipped = append(skipped, "arc: "+m.Name+" not registered: "+err.Error())
+					reg = append(reg, arcreg.Entry{ID: m.Name, Keep: true})
 					continue
 				}
 				reg = append(reg, ae)
 			}
 		}
+	}
+	var warnings []string
+	if arc {
+		// Register first: arc's own rendered guidance exists only once its
+		// registry holds a module, so the preamble drops its bullets then.
+		n, w := arcreg.SyncCount(dir, reg)
+		warnings = append(skipped, w...)
+		opt.Arc = n > 0
 	}
 	written := []string{"MODULES.md"}
 	if err := os.WriteFile(filepath.Join(dir, "MODULES.md"), []byte(index.Render(f.Ecosystem, ds, opt)), 0o644); err != nil {
@@ -235,11 +245,7 @@ func (a App) Index(ctx context.Context, dir string, modulesOnly bool, arcMode st
 		}
 		written = append(written, "AGENTS.md")
 	}
-	res := IndexResult{Written: written, Modules: len(ds), Arc: arc, Warning: warn}
-	if arc {
-		res.Warnings = append(skipped, arcreg.Sync(dir, reg)...)
-	}
-	return res, nil
+	return IndexResult{Written: written, Modules: len(ds), Arc: opt.Arc, Warning: warn, Warnings: warnings}, nil
 }
 
 // arcEntry maps an installed module's descriptor to its arc registry entry.

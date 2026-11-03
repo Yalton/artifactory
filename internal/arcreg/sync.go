@@ -25,6 +25,9 @@ type Entry struct {
 	Entry   []string
 	Import  string
 	Rules   []string
+	// Keep marks a module that could not be built into an entry this time:
+	// Sync leaves its registered entry alone instead of removing it.
+	Keep bool
 }
 
 // Toplevel returns the git top level of dir, or dir when it is not in a
@@ -42,22 +45,29 @@ func Toplevel(dir string) string {
 // from the git top level of projectDir. Failures are warnings: the install
 // that called Sync still succeeded.
 func Sync(projectDir string, mods []Entry) (warnings []string) {
+	_, warnings = SyncCount(projectDir, mods)
+	return warnings
+}
+
+// SyncCount is Sync that also returns how many modules arc's registry holds
+// afterwards, from any source. The count is 0 when the registry cannot be
+// listed.
+func SyncCount(projectDir string, mods []Entry) (count int, warnings []string) {
 	top := Toplevel(projectDir)
-	prefix := ""
-	if a, err := filepath.EvalSymlinks(projectDir); err == nil {
-		if b, err := filepath.EvalSymlinks(top); err == nil {
-			if rel, err := filepath.Rel(b, a); err == nil && rel != "." {
-				prefix = filepath.ToSlash(rel)
-			}
-		}
-	}
 	warn := func(format string, args ...any) {
 		warnings = append(warnings, "arc: "+fmt.Sprintf(format, args...))
+	}
+	prefix, perr := prefixOf(projectDir, top)
+	if perr != nil {
+		warn("cannot place %s inside %s: %v", projectDir, top, perr)
 	}
 
 	keep := map[string]bool{}
 	for _, m := range mods {
 		keep[m.ID] = true
+		if m.Keep {
+			continue
+		}
 		args := []string{"module", "set", m.ID, "--summary", m.Summary}
 		for _, p := range m.Paths {
 			args = append(args, "--path", path.Join(prefix, p))
@@ -83,7 +93,7 @@ func Sync(projectDir string, mods []Entry) (warnings []string) {
 	out, err := run(top, "arc", "module", "list", "--json")
 	if err != nil {
 		warn("module list failed, stale entries not removed: %s", detail(out, err))
-		return warnings
+		return 0, warnings
 	}
 	var list struct {
 		Modules []struct {
@@ -94,17 +104,47 @@ func Sync(projectDir string, mods []Entry) (warnings []string) {
 	}
 	if err := json.Unmarshal([]byte(out), &list); err != nil {
 		warn("module list gave unreadable output, stale entries not removed: %v", err)
-		return warnings
+		return 0, warnings
 	}
+	count = len(list.Modules)
 	for _, e := range list.Modules {
-		if e.Source != Source || keep[e.ID] || !ownedBy(prefix, e.Paths) {
+		if perr != nil || e.Source != Source || keep[e.ID] || !ownedBy(prefix, e.Paths) {
 			continue
 		}
 		if out, err := run(top, "arc", "module", "rm", e.ID); err != nil {
 			warn("module rm %s failed: %s", e.ID, detail(out, err))
+		} else {
+			count--
 		}
 	}
-	return warnings
+	return count, warnings
+}
+
+// prefixOf returns dir's path below the git top level, slash separated and
+// empty at the top. A relative dir is made absolute first.
+func prefixOf(dir, top string) (string, error) {
+	a, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	if a, err = filepath.EvalSymlinks(a); err != nil {
+		return "", err
+	}
+	b, err := filepath.Abs(top)
+	if err != nil {
+		return "", err
+	}
+	if b, err = filepath.EvalSymlinks(b); err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(b, a)
+	if err != nil {
+		return "", err
+	}
+	if rel == "." {
+		return "", nil
+	}
+	return filepath.ToSlash(rel), nil
 }
 
 // run executes name with a timeout in dir. It returns stdout, or on failure

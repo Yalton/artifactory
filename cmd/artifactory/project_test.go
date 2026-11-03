@@ -133,10 +133,14 @@ func TestRelativeDirProviderResolvesAgainstProject(t *testing.T) {
 }
 
 // fakeArcOnPath puts an `arc` script that exits with code on PATH.
-func fakeArcOnPath(t *testing.T, code string) {
+func fakeArcOnPath(t *testing.T, code string, withModule bool) {
 	t.Helper()
 	bin := t.TempDir()
-	script := "#!/bin/sh\necho '{\"modules\":[]}'\nexit " + code + "\n"
+	list := `{"modules":[]}`
+	if withModule {
+		list = `{"modules":[{"id":"Other","summary":"x","paths":["lib/Other/**"]}]}`
+	}
+	script := "#!/bin/sh\necho '" + list + "'\nexit " + code + "\n"
 	if err := os.WriteFile(filepath.Join(bin, "arc"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -185,8 +189,15 @@ func TestIndexArcModes(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, ".arch", "registry.yaml"), []byte("concepts: []\n"), 0o644)
 	const arcBullet = "Never edit files inside an installed module"
 
-	fakeArcOnPath(t, "0")
+	// Arc with an empty registry has no guidance of its own yet.
+	fakeArcOnPath(t, "0", false)
 	code, so, se := runCmd("index", "--project", dir, "--json")
+	if code != 0 || !strings.Contains(so, `"arc": false`) || !strings.Contains(readFile(t, filepath.Join(dir, "AGENTS.md")), arcBullet) {
+		t.Fatalf("auto with empty arc: %d %q %q", code, so, se)
+	}
+
+	fakeArcOnPath(t, "0", true)
+	code, so, se = runCmd("index", "--project", dir, "--json")
 	if code != 0 || !strings.Contains(so, `"arc": true`) {
 		t.Fatalf("auto with arc: %d %q %q", code, so, se)
 	}
@@ -205,7 +216,7 @@ func TestIndexArcModes(t *testing.T) {
 	}
 
 	// An arc too old for `module list` warns and keeps the full preamble.
-	fakeArcOnPath(t, "2")
+	fakeArcOnPath(t, "2", false)
 	code, so, se = runCmd("index", "--project", dir)
 	if code != 0 || !strings.Contains(se, "module rules not registered") || !strings.Contains(readFile(t, filepath.Join(dir, "AGENTS.md")), arcBullet) {
 		t.Errorf("old arc: %d %q %q", code, so, se)

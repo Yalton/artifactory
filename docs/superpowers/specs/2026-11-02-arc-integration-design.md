@@ -96,12 +96,12 @@ Module paths take precedence over concept paths. A concept glob such as `**` may
   | `source` | `artifactory` |
 
   An `arc module set` failure becomes a warning. The install still succeeds.
-- **The preamble with arc.** When arc is present, `index` leaves three bullets out of the preamble, in both `MODULES.md` and the `AGENTS.md` block, because arc's rendered snippet and hooks now carry them:
+- **The preamble with arc.** When arc is on and, after `index` has synced, arc's registry holds at least one module, `index` leaves three bullets out of the preamble, in both `MODULES.md` and the `AGENTS.md` block, because arc's rendered snippet and hooks now carry them:
   - use a module instead of writing your own;
   - never edit files inside an installed module;
   - wire every module into the real entry point.
 
-  The other bullets stay: read the index first, install only with the `install` command, check liveness before finishing, merge the README's Wiring section into your existing class, and stop once the checks pass. The project notes stay too. The preamble file splits into a module-rules part and the rest, so `standard/preamble.md` stays the one source of the text. `--json` reports `"arc": true|false`.
+  The other bullets stay: read the index first, install only with the `install` command, check liveness before finishing, merge the README's Wiring section into your existing class, and stop once the checks pass. The project notes stay too. The preamble file splits into a module-rules part and the rest, so `standard/preamble.md` stays the one source of the text. With arc on but no module registered yet, arc renders none of its own module lines, so `index` keeps the full preamble. `install` and `index` re-render after registering, so the bullets drop as soon as the first module is registered. `--json` reports `"arc": true` only when the bullets were dropped.
 - **Gaps.** When `init` finds arc, the skill file gets one line: "with arc present, `arc find` before writing a new piece."
 
 ### Harness: arc on/off
@@ -151,7 +151,7 @@ A single run of 5 trials is weak evidence either way, and the report says so. Th
 - **artifactory calls `arc module set`.** arc never reads artifactory files.
 - **The session-start channel is the first-write hook context,** because opencode has no session-start hook.
 - **Submodule pointer moves are allowed.** Dirty submodule content is not.
-- **artifactory drops the three module bullets from the preamble when arc is present,** in both `MODULES.md` and the `AGENTS.md` block, so they are not said twice.
+- **artifactory drops the three module bullets from the preamble when arc is on and its registry has a module,** in both `MODULES.md` and the `AGENTS.md` block, so they are not said twice.
 - **Module paths take precedence over concept paths,** instead of overlap being forbidden. This lets a project keep a catch-all concept.
 - **The wiring check counts an entry symbol's leading identifier.** Without that, an autoload-only module, which the preamble calls correct, would fail.
 - **Trials install through the CLI (`--product`),** and arc is evaluated on top of that in a separate round, so the two effects can be told apart.
