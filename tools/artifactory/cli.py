@@ -34,7 +34,7 @@ def cmd_round(args) -> int:
     from .harness import run_round
 
     result = run_round(Path(args.test_dir), args.round, trials=args.trials, baseline=args.baseline,
-                       product=args.product, arc=args.arc, arc_src=args.arc_src)
+                       product=args.product, arc=args.arc, arc_src=args.arc_src, roadmap=args.roadmap)
     print(f"{result.test} {'baseline' if args.baseline else f'round {result.round}'}: "
           f"{result.passes}/{len(result.results)} passed; bar {'met' if result.met_bar else 'not met'}")
     return 0
@@ -45,6 +45,55 @@ def cmd_mirror(args) -> int:
 
     for path in refresh_mirrors():
         print(path)
+    return 0
+
+
+def cmd_roadmap_workspace(args) -> int:
+    import tempfile
+
+    from .acceptance import load_acceptance
+    from .harness import RESULTS, build_arc, build_cli, prepare_roadmap_workspace
+
+    test = load_acceptance(Path(args.test_dir))
+    mirrors = RESULTS / "mirrors"
+    for name in test.modules:
+        if not (mirrors / f"{name}.git").is_dir():
+            print(f"roadmap-workspace: no mirror at {mirrors / (name + '.git')}; run `artifactory mirror` first",
+                  file=sys.stderr)
+            return 2
+    with tempfile.TemporaryDirectory(prefix="artifactory-build-") as tmp:
+        trial, prefix = prepare_roadmap_workspace(test, Path(args.out_dir), mirrors, build_cli(Path(tmp)),
+                                                  build_arc(Path(tmp), args.arc_src))
+    print(f"project: {trial.project}")
+    print(f"env: {prefix}")
+    return 0
+
+
+def cmd_roadmap_export(args) -> int:
+    from .harness import export_roadmap
+
+    try:
+        n = export_roadmap(Path(args.project), Path(args.output))
+    except RuntimeError as e:
+        print(f"roadmap-export: {e}", file=sys.stderr)
+        return 1
+    print(f"{n} beads exported to {args.output}")
+    return 0
+
+
+def cmd_roadmap_score(args) -> int:
+    import json
+
+    from .acceptance import load_acceptance
+    from .roadmap import CONTRACTS, format_score, score_roadmap
+
+    kits = load_acceptance(Path(args.test)).modules
+    try:
+        score = score_roadmap(Path(args.file), kits, CONTRACTS)
+    except (OSError, ValueError) as e:
+        print(f"roadmap-score: {e}", file=sys.stderr)
+        return 1
+    print(json.dumps(score, indent=2) if args.json else format_score(score, kits))
     return 0
 
 
@@ -71,10 +120,28 @@ def main(argv: list[str] | None = None) -> int:
                    help="run the artifactory CLI in the sandbox (dir: provider on the local mirrors)")
     r.add_argument("--arc", action="store_true",
                    help="with --product: install arc (registry, opencode plugin) in each trial; checker reports arc_gate")
+    r.add_argument("--roadmap", choices=["none", "frontier", "ornith"], default="none",
+                   help="bead conditions (need --product --arc): frontier imports the frozen roadmap, "
+                        "ornith writes one first; none is one session with the brief")
     r.add_argument("--arc-src", type=Path, help="arc source tree to build (default $ARC_SRC)")
     r.set_defaults(func=cmd_round)
     m = sub.add_parser("mirror", help="refresh bare mirrors of the Godot kits into results/mirrors/")
     m.set_defaults(func=cmd_mirror)
+    w = sub.add_parser("roadmap-workspace", help="prepare the frontier roadmap writer's workspace (no roadmap imported)")
+    w.add_argument("test_dir")
+    w.add_argument("out_dir")
+    w.add_argument("--arc-src", type=Path, help="arc source tree to build (default $ARC_SRC)")
+    w.set_defaults(func=cmd_roadmap_workspace)
+    e = sub.add_parser("roadmap-export", help="export the writer's beads as the frozen roadmap, after checks")
+    e.add_argument("project")
+    e.add_argument("output")
+    e.set_defaults(func=cmd_roadmap_export)
+    s = sub.add_parser("roadmap-score", help="score an exported roadmap: kits named, unknown modules, contracts, gap coverage")
+    s.add_argument("file")
+    s.add_argument("--test", default=str(Path(__file__).resolve().parents[2] / "tests" / "acceptance" / "godot-lantern-keep"),
+                   help="acceptance test directory whose modules are the kits (default: godot-lantern-keep)")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_roadmap_score)
     args = parser.parse_args(argv)
     return args.func(args)
 

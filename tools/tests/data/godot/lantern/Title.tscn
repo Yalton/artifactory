@@ -1,0 +1,6 @@
+[gd_scene format=3]
+
+[node name="Title" type="Control"]
+
+[node name="Label" type="Label" parent="."]
+text = "Lantern Keep"
