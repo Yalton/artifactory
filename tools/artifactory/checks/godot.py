@@ -58,7 +58,7 @@ def check_godot(project: Path, test: AcceptanceTest, mirrors: Path, branch: str,
         lantern = test.probe == "lantern"
         title = _check_title_scene(copy) if lantern else None
 
-        build, run = _build_and_run(copy, Path(tmp) / "logs", probe_mode=test.probe)
+        build, run = _build_and_run(copy, Path(tmp) / "logs", probe_mode="lantern" if lantern else None)
         probes = ["player_moves", "player_visible"] + (["rooms", "dialogue"] if lantern else [])
         if run is None:
             runs = CheckResult("runs", False, "not run: build failed")
@@ -372,6 +372,9 @@ def _check_probe(run: _Proc, name: str) -> CheckResult:
     """The probe's last `PROBE <name>=...` line decides the check."""
     probe = [l.strip() for l in run.output.splitlines() if l.strip().startswith(f"PROBE {name}=")]
     if not probe:
+        errors = [l.strip() for l in run.output.splitlines() if l.strip().startswith("PROBE lantern_error=")]
+        if errors:
+            return CheckResult(name, False, f"probe never reported: {errors[-1]}")
         return CheckResult(name, False, "probe never reported (game did not run to 3 s)")
     line = probe[-1]
     return CheckResult(name, f"{name}=true" in line.split(), line)

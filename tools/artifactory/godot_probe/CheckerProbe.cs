@@ -141,7 +141,10 @@ public partial class CheckerProbe : Node
         if (look.DistanceTo(_player.GlobalPosition) > 1e-3f) _player.LookAt(look, Vector3.Up);
         if (_player is CharacterBody3D body) body.Velocity = Vector3.Zero;
 
-        await PhysicsFrames(2);
+        // Enough steps for an Area3D around the keeper to report the overlap.
+        await PhysicsFrames(5);
+        // The dialogue must open because of `interact`, so one already showing does not count.
+        if (DialogueShown()) return "shown_before_interact";
         Input.ParseInputEvent(new InputEventAction { Action = "interact", Pressed = true });
         await PhysicsFrames(1);
         Input.ParseInputEvent(new InputEventAction { Action = "interact", Pressed = false });
@@ -154,13 +157,18 @@ public partial class CheckerProbe : Node
         return DialogueShown() ? null : "not_shown";
     }
 
+    // A CanvasLayer or plain Node says nothing by itself (a layer is visible by default):
+    // it counts only when it is visible and some CanvasItem under it is drawn.
     private bool DialogueShown() => GetTree().GetNodesInGroup("dialogue").Any(n => n switch
     {
         CanvasItem c => c.IsVisibleInTree(),
         Node3D n3 => n3.IsVisibleInTree(),
-        CanvasLayer l => l.Visible,
-        _ => false,
+        CanvasLayer l => l.Visible && AnyDrawnCanvasItem(l),
+        _ => AnyDrawnCanvasItem(n),
     });
+
+    private static bool AnyDrawnCanvasItem(Node n) =>
+        n.FindChildren("*", "CanvasItem", true, false).OfType<CanvasItem>().Any(c => c.IsVisibleInTree());
 
     // Change scene and wait until the new instance of `path` is current, plus one frame.
     // A missing room is a probe failure, so it is never handed to the loader.

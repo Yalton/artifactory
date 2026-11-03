@@ -492,3 +492,47 @@ def test_lantern_missing_room_and_keeper_fail(tmp_path):
     assert failing(result) == {"rooms", "dialogue"}, result.to_json()
     assert checks["rooms"].detail == "PROBE rooms=false missing=tower"
     assert checks["dialogue"].detail == "PROBE dialogue=false problem=no_keeper"
+
+
+def test_check_probe_surfaces_lantern_error():
+    run = godot_checks.Proc(0, "PROBE player_moves=true w=4 d=4\nPROBE lantern_error=NullReferenceException: boom\n", 1.0)
+    check = godot_checks._check_probe(run, "rooms")
+    assert not check.passed
+    assert check.detail == "probe never reported: PROBE lantern_error=NullReferenceException: boom"
+
+
+def test_only_lantern_selects_a_probe_mode(tmp_path, fake_godot):
+    calls, _ = fake_godot
+    test = dataclasses.replace(lantern_test(fake_project(tmp_path / "blank")), probe="other")
+    result = check_godot(fake_project(tmp_path / "project"), test, tmp_path, BRANCH)
+    assert [c.name for c in result.checks] == NAMES
+    assert all("ARTIFACTORY_PROBE_MODE" not in env for _, env in calls)
+
+
+@pytest.mark.godot
+@needs_godot
+def test_lantern_dialogue_visible_before_interact_fails(tmp_path):
+    project = make_lantern(tmp_path)
+    hall = project / "rooms" / "hall.tscn"
+    hall.write_text(hall.read_text().replace("visible = false\n", ""))
+    (tmp_path / "mirrors").mkdir()
+    result = check_godot(project, lantern_test(), tmp_path / "mirrors", BRANCH)
+    checks = {c.name: c for c in result.checks}
+    assert failing(result) == {"dialogue"}, result.to_json()
+    assert checks["dialogue"].detail == "PROBE dialogue=false problem=shown_before_interact"
+
+
+@pytest.mark.godot
+@needs_godot
+def test_lantern_dialogue_canvas_layer_counts_its_children(tmp_path):
+    # The always-visible layer is in group dialogue; only its hidden Label opens on interact.
+    project = make_lantern(tmp_path)
+    hall = project / "rooms" / "hall.tscn"
+    hall.write_text(hall.read_text()
+                    .replace('[node name="Ui" type="CanvasLayer" parent="."]', '[node name="Ui" type="CanvasLayer" parent="." groups=["dialogue"]]')
+                    .replace('parent="Ui" groups=["dialogue"]', 'parent="Ui"'))
+    (project / "Keeper.cs").write_text((project / "Keeper.cs").read_text().replace(
+        'GetFirstNodeInGroup("dialogue") is CanvasItem dialogue', 'GetFirstNodeInGroup("dialogue")?.GetChild(0) is CanvasItem dialogue'))
+    (tmp_path / "mirrors").mkdir()
+    result = check_godot(project, lantern_test(), tmp_path / "mirrors", BRANCH)
+    assert failing(result) == set(), result.to_json()
