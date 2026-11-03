@@ -59,7 +59,7 @@ def check_godot(project: Path, test: AcceptanceTest, mirrors: Path, branch: str,
         title = _check_title_scene(copy) if lantern else None
 
         build, run = _build_and_run(copy, Path(tmp) / "logs", probe_mode="lantern" if lantern else None)
-        probes = ["player_moves", "player_visible"] + (["rooms", "dialogue"] if lantern else [])
+        probes = ["player_moves", "player_visible"] + (["rooms", "dialogue"] if lantern else ["room_present"])
         if run is None:
             runs = CheckResult("runs", False, "not run: build failed")
             probed = [CheckResult(name, False, "not run: build failed") for name in probes]
@@ -76,8 +76,12 @@ def check_godot(project: Path, test: AcceptanceTest, mirrors: Path, branch: str,
         unmodified = CheckResult("modules_unmodified", False,
                                  f"manual: judge kit edits from the tree (automatic: {unmodified.detail})")
 
-    moves, visible, *lantern_probes = probed
-    checks = [build, runs, moves, visible, installed_check, live, unmodified, duplication, *lantern_probes]
+    if lantern:
+        moves, visible, *lantern_probes = probed
+        checks = [build, runs, moves, visible, installed_check, live, unmodified, duplication, *lantern_probes]
+    else:
+        moves, visible, room = probed
+        checks = [build, runs, moves, visible, room, installed_check, live, unmodified, duplication]
     if title is not None:
         checks.append(title)
     if arc_gate is not None:

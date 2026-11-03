@@ -21,6 +21,8 @@ class TrialResult:
     checks: list[CheckResult] = field(default_factory=list)
     # Set by the harness (e.g. "timeout"), never by a checker.
     reason: str | None = None
+    # Times the harness resumed the agent after a dropped model connection.
+    resumes: int = 0
     # Arc mode only: how many writes arc denied (set by the harness from the transcript).
     arc_denials: int | None = None
     # Arc mode only: True when arc's hook left session state in the trial project, so it ran at
@@ -39,6 +41,7 @@ class TrialResult:
             "trial": self.trial,
             "passed": self.passed,
             "reason": self.reason,
+            "resumes": self.resumes,
             "arc_denials": self.arc_denials,
             "arc_hook_live": self.arc_hook_live,
         }

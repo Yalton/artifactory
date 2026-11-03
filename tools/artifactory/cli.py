@@ -36,7 +36,8 @@ def cmd_round(args) -> int:
     result = run_round(Path(args.test_dir), args.round, trials=args.trials, baseline=args.baseline,
                        product=args.product, arc=args.arc, arc_src=args.arc_src, roadmap=args.roadmap)
     print(f"{result.test} {'baseline' if args.baseline else f'round {result.round}'}: "
-          f"{result.passes}/{len(result.results)} passed; bar {'met' if result.met_bar else 'not met'}")
+          f"{result.passes}/{len(result.results)} passed; bar {'met' if result.met_bar else 'not met'}"
+          + (f"; {result.infrastructure_failures} infrastructure failures" if result.infrastructure_failures else ""))
     return 0
 
 

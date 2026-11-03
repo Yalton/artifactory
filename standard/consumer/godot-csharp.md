@@ -11,7 +11,7 @@ Each installed kit's marker must appear and no `ERROR:` line may be printed.
 
 Also print a line from each of your own scripts' `_Ready` (for example `GD.Print("[Player] ready")`) and confirm it appears. Kit markers do not prove your scripts are attached.
 
-Then check movement and the camera. Copy this to `MoveCheck.cs` in the project root. It does nothing unless run with `--move-check`:
+Then check movement, the camera and the room. Copy this to `MoveCheck.cs` in the project root. It does nothing unless run with `--move-check`:
 
 ```csharp
 using System.Globalization;
@@ -26,6 +26,7 @@ public partial class MoveCheck : Node
     private Vector3 _a, _b, _c;
     private string _why = "";
     private string _view0 = "";
+    private string _room = "";
 
     public override void _Ready()
     {
@@ -40,7 +41,7 @@ public partial class MoveCheck : Node
         {
             var n = GetTree().GetNodesInGroup("player").OfType<Node3D>().ToList();
             if (n.Count == 1) _p = n[0]; else _why = $"{n.Count} Node3D in group player (need exactly 1)";
-            _a = _p?.GlobalPosition ?? default; _view0 = Unseen(); Press(Key.W, true); _stage = 1;
+            _a = _p?.GlobalPosition ?? default; _view0 = Unseen(); _room = RoomMissing(); Press(Key.W, true); _stage = 1;
         }
         else if (_stage == 1 && t >= 2) { Press(Key.W, false); _b = _p?.GlobalPosition ?? default; Press(Key.D, true); _stage = 2; }
         else if (_stage == 2 && t >= 3)
@@ -50,11 +51,30 @@ public partial class MoveCheck : Node
             Vector3 dw = w.Normalized(), dd = d.Normalized();
             bool ok = _p != null && w.Length() is >= 0.5f and <= 20f && d.Length() is >= 0.5f and <= 20f && dw.Z < -0.7f && dd.X > 0.7f;
             string view1 = Unseen(), view = _view0 != "" ? _view0 : view1;
-            bool seen = view == "";
+            bool seen = view == "", room = _room == "";
             if (_why != "") GD.PrintErr("MOVECHECK FAIL: " + _why);
-            GD.Print($"MOVECHECK ok={(ok && seen).ToString().ToLower()} camera_sees_player={(seen ? "true" : view)} w={F(w.Length())} d={F(d.Length())} dir_w={dw} dir_d={dd}");
-            GetTree().Quit(ok && seen ? 0 : 1);
+            GD.Print($"MOVECHECK ok={(ok && seen && room).ToString().ToLower()} camera_sees_player={(seen ? "true" : view)} room={(room ? "true" : "missing:" + _room)} w={F(w.Length())} d={F(d.Length())} dir_w={dw} dir_d={dd}");
+            GetTree().Quit(ok && seen && room ? 0 : 1);
         }
+    }
+
+    // World boxes of every drawn mesh that is not part of the player.
+    private System.Collections.Generic.List<Aabb> Boxes() =>
+        GetTree().Root.FindChildren("*", "GeometryInstance3D", true, false).OfType<GeometryInstance3D>()
+            .Where(g => g.IsVisibleInTree() && Drawn(g) && g != _p && !_p.IsAncestorOf(g))
+            .Select(g => g.GlobalTransform * g.GetAabb()).ToList();
+
+    private static bool Drawn(GeometryInstance3D g) => g is not MeshInstance3D mi
+        || (mi.Mesh?.GetRid() is Rid r && r.IsValid && RenderingServer.MeshGetSurfaceCount(r) > 0);
+
+    // Directions from the player with no drawn geometry: a floor below, a wall on each side.
+    private string RoomMissing()
+    {
+        if (_p == null) return "no_player";
+        Vector3 o = _p.GlobalPosition; var boxes = Boxes();
+        var dirs = new (string, Vector3)[] { ("down", Vector3.Down * 10), ("+x", Vector3.Right * 100),
+            ("-x", Vector3.Left * 100), ("+z", Vector3.Back * 100), ("-z", Vector3.Forward * 100) };
+        return string.Join(",", dirs.Where(d => !boxes.Any(b => b.HasPoint(o) || b.IntersectsSegment(o, o + d.Item2))).Select(d => d.Item1));
     }
 
     // "" when the current camera sees a drawn mesh of the player at 16:9, else why not.
@@ -65,20 +85,25 @@ public partial class MoveCheck : Node
         if (cam == null) return "no_camera";
         if (_p.IsAncestorOf(cam) && cam.GlobalPosition.DistanceTo(_p.GlobalPosition) <= 2f) return ""; // first person
         var meshes = _p.FindChildren("*", "GeometryInstance3D", true, false).OfType<GeometryInstance3D>()
-            .Where(g => g.IsVisibleInTree() && (g is not MeshInstance3D mi
-                || (mi.Mesh?.GetRid() is Rid r && r.IsValid && RenderingServer.MeshGetSurfaceCount(r) > 0))).ToList();
+            .Where(g => g.IsVisibleInTree() && Drawn(g)).ToList();
         if (meshes.Count == 0) return "no_drawn_mesh";
         var own = new Godot.Collections.Array<Rid>(_p.FindChildren("*", "CollisionObject3D", true, false)
             .OfType<CollisionObject3D>().Append(_p as CollisionObject3D).Where(b => b != null).Select(b => b.GetRid()));
+        var walls = Boxes().Where(b => !b.HasPoint(cam.GlobalPosition)).ToList();
         bool framed = false;
         foreach (var g in meshes)
         {
-            Vector3 c = g.GlobalTransform * g.GetAabb().GetCenter(), l = cam.GlobalTransform.AffineInverse() * c;
-            float half = -l.Z * Mathf.Tan(Mathf.DegToRad(cam.Fov / 2f)); // headless viewports are 64x64, so frame at 16:9 by hand
-            if (-l.Z < cam.Near || Mathf.Abs(l.Y) > half || Mathf.Abs(l.X) > half * 16f / 9f) continue;
-            framed = true;
-            var ray = PhysicsRayQueryParameters3D.Create(cam.GlobalPosition, c); ray.Exclude = own;
-            if (GetViewport().World3D.DirectSpaceState.IntersectRay(ray).Count == 0) return "";
+            Aabb box = g.GetAabb(); Vector3 mid = box.GetCenter();
+            foreach (Vector3 p in new[] { mid, mid with { Y = box.Position.Y + box.Size.Y * 0.9f } }) // centre and top
+            {
+                Vector3 c = g.GlobalTransform * p, l = cam.GlobalTransform.AffineInverse() * c;
+                float half = -l.Z * Mathf.Tan(Mathf.DegToRad(cam.Fov / 2f)); // headless viewports are 64x64, so frame at 16:9 by hand
+                if (-l.Z < cam.Near || Mathf.Abs(l.Y) > half || Mathf.Abs(l.X) > half * 16f / 9f) continue;
+                framed = true;
+                var ray = PhysicsRayQueryParameters3D.Create(cam.GlobalPosition, c); ray.Exclude = own;
+                if (GetViewport().World3D.DirectSpaceState.IntersectRay(ray).Count == 0
+                    && !walls.Any(b => b.IntersectsSegment(cam.GlobalPosition, c))) return "";
+            }
         }
         return framed ? "blocked" : "out_of_frame";
     }
@@ -96,7 +121,7 @@ Add the autoload `MoveCheck="*res://MoveCheck.cs"` under `[autoload]`, run `dotn
 timeout 30 godot --headless --path . -- --move-check
 ```
 
-It passes only if it prints `MOVECHECK ok=true` and no `ERROR:` line. No `MOVECHECK` line within 30 s is a failure: check the autoload line and `dotnet build`. It fails if the node in group `player` is not exactly one Node3D, or W and D do not move it about 0.5 to 20 units (W along -Z, D along +X), or the camera cannot see the player before and after it moves. Then `camera_sees_player` names why: `no_camera`, `no_drawn_mesh` (the player has no visible built-in mesh such as `CapsuleMesh`), `out_of_frame`, or `blocked` (a wall, floor or ceiling collider is in between). Fix the cause and re-run until it passes.
+It passes only if it prints `MOVECHECK ok=true` and no `ERROR:` line. No `MOVECHECK` line within 30 s is a failure: check the autoload line and `dotnet build`. It fails if the node in group `player` is not exactly one Node3D, or W and D do not move it about 0.5 to 20 units (W along -Z, D along +X), or the camera cannot see the player before and after it moves, or there is no room around the player's start. Then `camera_sees_player` names why: `no_camera`, `no_drawn_mesh` (the player has no visible built-in mesh such as `CapsuleMesh`), `out_of_frame`, or `blocked` (a wall, floor or ceiling is in between, drawn or solid). `room=missing:<directions>` lists where no drawn floor (`down`) or wall (`+x`, `-x`, `+z`, `-z`) surrounds the player's start. Fix the cause and re-run until it passes.
 
 ### Player pitfalls
 
@@ -104,6 +129,7 @@ It passes only if it prints `MOVECHECK ok=true` and no `ERROR:` line. No `MOVECH
 - Override `_PhysicsProcess(double delta)`. `float delta` does not compile.
 - Move in the XZ plane: `Input.GetVector(negX, posX, negY, posY)`, so `GetVector("move_left","move_right","move_forward","move_back")` gives `new Vector3(v.X, 0, v.Y)`. Set that world-space velocity directly. Never multiply a velocity by `Transform`.
 - Make the `CollisionShape3D` a direct child of the body.
+- Build each floor and wall as a `StaticBody3D` with a `MeshInstance3D` and a `CollisionShape3D` as children. A `CollisionShape3D` under a `MeshInstance3D` or a plain `Node3D` collides with nothing, so the player walks through that wall.
 - Only the body joins group `player`, not its mesh.
 - Set `Position`/`GlobalPosition` after `AddChild`, not before.
 - Spawn the player above the floor.

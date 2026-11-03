@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DATA = Path(__file__).resolve().parent / "data" / "godot"
 BLANK = ROOT / "fixtures" / "godot-blank"
 KITS = ["StubAKit", "StubBKit"]
-NAMES = ["build", "runs", "player_moves", "player_visible", "modules_installed", "modules_live", "modules_unmodified", "no_duplication"]
+NAMES = ["build", "runs", "player_moves", "player_visible", "room_present", "modules_installed", "modules_live", "modules_unmodified", "no_duplication"]
 BRANCH = "stitchability"
 
 
@@ -106,6 +106,7 @@ def test_good_project_passes_all(tmp_path):
     assert all(c.passed for c in checks.values())
     assert "w=" in checks["player_moves"].detail
     assert "camera=Camera3D" in checks["player_visible"].detail
+    assert checks["room_present"].detail == "PROBE room_present=true"
     assert result.reason is None
     # The input project is never modified.
     assert git("status", "--porcelain", "--ignored", cwd=project) == before
@@ -194,6 +195,73 @@ def test_follow_camera_behind_wall_fails_player_visible(tmp_path):
     result = check_godot(project, acceptance(), mirrors, BRANCH)
     assert failing(result) == {"player_visible"}, result.to_json()
     assert "start=blocked" in by_name(result)["player_visible"].detail
+
+
+@pytest.mark.godot
+def test_wall_mesh_without_body_fails_player_visible(tmp_path):
+    project, mirrors = make_project(tmp_path)
+    scene = project / "Main.tscn"
+    # A drawn wall with no physics body hides the player as surely as a collider does.
+    text = scene.read_text().replace('[node name="Main"', '[sub_resource type="BoxMesh" id="screen"]\nsize = Vector3(40, 40, 1)\n\n[node name="Main"')
+    text += '\n[node name="Screen" type="MeshInstance3D" parent="."]\ntransform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 7)\nmesh = SubResource("screen")\n'
+    scene.write_text(text)
+    result = check_godot(project, acceptance(), mirrors, BRANCH)
+    assert failing(result) == {"player_visible"}, result.to_json()
+    assert "camera=Camera3D start=blocked" in by_name(result)["player_visible"].detail
+
+
+@pytest.mark.godot
+def test_player_half_sunk_in_floor_is_still_visible(tmp_path):
+    project, mirrors = make_project(tmp_path)
+    scene = project / "Main.tscn"
+    # The floor's box holds the capsule's centre, but its top shows above the floor.
+    scene.write_text(scene.read_text().replace(
+        'size = Vector3(30, 0.2, 30)', 'size = Vector3(30, 2, 30)').replace(
+        "Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -1.1, 0)", "Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.5, 0)"))
+    result = check_godot(project, acceptance(), mirrors, BRANCH)
+    assert failing(result) == set(), result.to_json()
+
+
+def _without_nodes(text: str, names: list[str]) -> str:
+    """Drop the named Room children (each node block runs to the next blank line)."""
+    for name in names:
+        start = text.index(f'[node name="{name}" type="MeshInstance3D" parent="Room"]')
+        end = text.index("\n\n", start) + 2
+        text = text[:start] + text[end:]
+    return text
+
+
+@pytest.mark.godot
+def test_no_room_fails_room_present(tmp_path):
+    project, mirrors = make_project(tmp_path)
+    scene = project / "Main.tscn"
+    scene.write_text(_without_nodes(scene.read_text(), ["Floor", "WallN", "WallS", "WallE", "WallW"]))
+    result = check_godot(project, acceptance(), mirrors, BRANCH)
+    assert failing(result) == {"room_present"}, result.to_json()
+    assert by_name(result)["room_present"].detail == "PROBE room_present=false missing=down,+x,-x,+z,-z"
+
+
+@pytest.mark.godot
+def test_missing_wall_fails_room_present(tmp_path):
+    project, mirrors = make_project(tmp_path)
+    scene = project / "Main.tscn"
+    scene.write_text(_without_nodes(scene.read_text(), ["WallE"]))
+    result = check_godot(project, acceptance(), mirrors, BRANCH)
+    assert failing(result) == {"room_present"}, result.to_json()
+    assert by_name(result)["room_present"].detail == "PROBE room_present=false missing=+x"
+
+
+@pytest.mark.godot
+def test_room_as_one_mesh_around_player_passes(tmp_path):
+    project, mirrors = make_project(tmp_path)
+    scene = project / "Main.tscn"
+    # One big box holding the player and the camera, as a room modelled as a single mesh would.
+    text = _without_nodes(scene.read_text(), ["Floor", "WallN", "WallS", "WallE", "WallW"])
+    text = text.replace('[node name="Main"', '[sub_resource type="BoxMesh" id="shell"]\nsize = Vector3(30, 6, 30)\n\n[node name="Main"')
+    text += '\n[node name="Shell" type="MeshInstance3D" parent="Room"]\nmesh = SubResource("shell")\n'
+    scene.write_text(text)
+    result = check_godot(project, acceptance(), mirrors, BRANCH)
+    assert failing(result) == set(), result.to_json()
 
 
 @pytest.mark.godot
@@ -300,6 +368,7 @@ def test_godot_run_timeout_is_failure(tmp_path, monkeypatch):
     assert "timed out" in checks["runs"].detail
     assert not checks["player_moves"].passed
     assert not checks["player_visible"].passed
+    assert not checks["room_present"].passed
     assert result.reason is None
 
 
@@ -317,7 +386,7 @@ def test_baseline_mode_skips_live_and_marks_manual(tmp_path):
 # --- lantern probe mode ----------------------------------------------------
 
 LANTERN = DATA / "lantern"
-LANTERN_NAMES = [*NAMES, "rooms", "dialogue", "title_scene"]
+LANTERN_NAMES = [n for n in NAMES if n != "room_present"] + ["rooms", "dialogue", "title_scene"]
 needs_godot = pytest.mark.skipif(not (shutil.which("godot") and shutil.which("dotnet")),
                                  reason="needs godot and dotnet on PATH")
 

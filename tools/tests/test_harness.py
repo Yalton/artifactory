@@ -194,6 +194,63 @@ def test_every_kit_url_form_resolves_to_mirrors(tmp_path):
         assert out == f"file://{tmp_path / 'mirrors'}/PoolKit.git"
 
 
+DROP_EVENT = ('{"type":"error","sessionID":"ses_1","error":{"type":"unknown","message":'
+              '"Transport: ECONNRESET: The socket connection was closed unexpectedly."}}')
+
+
+def test_resume_command_continues_the_session():
+    argv = harness.opencode_command("build it")
+    resumed = harness.resume_command(argv, "ses_1")
+    assert resumed[:-3] == argv[:-1]
+    assert resumed[-3:] == ["--session", "ses_1", harness.RESUME_PROMPT]
+    assert harness.resume_command(argv, None) == argv
+
+
+def test_model_drop_reads_only_this_attempt(tmp_path):
+    transcript, log = tmp_path / "transcript.jsonl", tmp_path / "opencode.log"
+    transcript.write_text('{"type":"step_start","sessionID":"ses_1"}\n' + DROP_EVENT + "\n")
+    log.write_text("")
+    assert harness._model_drop(transcript, 0, log, 0) == (
+        "ses_1", "Transport: ECONNRESET: The socket connection was closed unexpectedly.")
+    at = transcript.stat().st_size
+    with open(transcript, "a") as f:
+        f.write('{"type":"text","sessionID":"ses_1"}\n')
+    assert harness._model_drop(transcript, at, log, 0) is None
+    # A run that never started a session: only the standalone server's failure shows, in the log.
+    log.write_text("Couldn't get any nameserver address\nError: Standalone server exited before reporting readiness\n")
+    assert harness._model_drop(transcript, transcript.stat().st_size, log, 0) == (
+        None, "Standalone server exited before reporting readiness")
+
+
+def test_dropped_connection_is_resumed(tmp_path, proxy, monkeypatch):
+    monkeypatch.setattr(harness, "RESUME_PAUSE_S", 0)
+    trial_dir = tmp_path / "trial-1"
+    script = (f'if [ "$1" = --session ]; then echo \'{{"type":"text","sessionID":"\'$2\'"}}\'; touch "resumed-$2"; '
+              f"else echo '{{\"type\":\"step_start\",\"sessionID\":\"ses_1\"}}'; echo '{DROP_EVENT}'; fi")
+    result = run_trial(GO_TEST, "# index", trial_dir, None, proxy,
+                       opencode_argv=[*fake_agent(script), "agent", "the prompt"], test_dir=GO_TEST_DIR)
+    assert result.resumes == 1
+    assert result.reason is None
+    assert (trial_dir / "project" / "resumed-ses_1").exists()
+    lines = (trial_dir / "transcript.jsonl").read_text().splitlines()
+    assert len(lines) == 3 and "ECONNRESET" in lines[1]
+    assert json.loads((trial_dir / "checker.json").read_text())["resumes"] == 1
+
+
+def test_repeated_drops_are_an_infrastructure_failure(tmp_path, proxy, monkeypatch):
+    monkeypatch.setattr(harness, "RESUME_PAUSE_S", 0)
+    trial_dir = tmp_path / "trial-1"
+    script = f"echo '{DROP_EVENT}'"
+    result = run_trial(GO_TEST, "# index", trial_dir, None, proxy,
+                       opencode_argv=[*fake_agent(script), "agent", "the prompt"], test_dir=GO_TEST_DIR)
+    assert result.resumes == harness.MAX_RESUMES
+    assert result.reason.startswith("infrastructure: model connection dropped after 3 resumes")
+    assert not result.passed
+    rnd = RoundResult("t", 1, [result, _trial(True, 2)])
+    assert rnd.infrastructure_failures == 1
+    assert json.loads(rnd.to_json())["infrastructure_failures"] == 1
+
+
 GOLDEN = ROOT / "internal" / "index" / "testdata"
 GODOT_TEST = load_acceptance(ROOT / "tests" / "acceptance" / "godot-capsule-room")
 
@@ -533,7 +590,8 @@ def order(trial) -> list[str]:
 def run(trial, agent, limit, roadmap="frontier", test=LANTERN):
     test = dataclasses.replace(test, time_limit_s=limit)
     start = time.monotonic()
-    timed_out, outcome = harness.run_agent(trial, test, agent, roadmap)
+    r = harness.run_agent(trial, test, agent, roadmap)
+    timed_out, outcome = r.timed_out, r.outcome
     return timed_out, outcome, time.monotonic() - start
 
 
@@ -655,11 +713,39 @@ def test_writing_phase_is_capped(bead_trial, monkeypatch):
 
 def test_none_mode_runs_one_session_into_transcript_jsonl(tmp_path):
     trial = prepare_trial(GO_TEST, "# index", tmp_path / "trial-1", None, None)
-    timed_out, outcome = harness.run_agent(trial, GO_TEST, fake_agent("echo '{}'; touch ran"), "none")
+    r = harness.run_agent(trial, GO_TEST, fake_agent("echo '{}'; touch ran"), "none")
+    timed_out, outcome = r.timed_out, r.outcome
     assert not timed_out and outcome is None
     assert (trial.project / "ran").exists()
     assert [p.name for p in trial.dir.glob("transcript*")] == ["transcript.jsonl"]
     assert (trial.dir / "opencode.log").exists()
+
+
+def test_bead_session_is_resumed_after_a_dropped_connection(bead_trial, monkeypatch):
+    monkeypatch.setattr(harness, "RESUME_PAUSE_S", 0)
+    t = bead_trial
+    a = new_bead(t, "first")
+    # The bead session drops; its resume (same session, RESUME_PROMPT) closes the bead.
+    on_bead = (f"echo $id > current; echo '{{\"type\":\"step_start\",\"sessionID\":\"ses_1\"}}'; "
+               f"echo '{DROP_EVENT}'")
+    on_other = 'if [ "$1" = --session ]; then bd close "$(cat current)" >/dev/null; fi'
+    agent = bead_agent(on_bead=on_bead, on_other=on_other)
+    r = harness.run_agent(t, dataclasses.replace(LANTERN, time_limit_s=120), agent, "frontier")
+    assert r.resumes == 1 and r.dropped is None and not r.timed_out
+    assert r.outcome.sessions == 1 and r.outcome.closed == 1
+    assert states(t) == {a: "closed"}
+    assert "ECONNRESET" in (t.dir / "transcript-1.jsonl").read_text()
+
+
+def test_a_bead_session_that_stays_dropped_ends_the_loop(bead_trial, monkeypatch):
+    monkeypatch.setattr(harness, "RESUME_PAUSE_S", 0)
+    t = bead_trial
+    new_bead(t, "first")
+    new_bead(t, "second")
+    agent = bead_agent(on_bead=f"echo '{DROP_EVENT}'", on_other=f"echo '{DROP_EVENT}'")
+    r = harness.run_agent(t, dataclasses.replace(LANTERN, time_limit_s=300), agent, "frontier")
+    assert r.resumes == harness.MAX_RESUMES and r.dropped.resumes == harness.MAX_RESUMES
+    assert r.outcome.sessions == 1
 
 
 def test_trial_json_records_roadmap_only_when_set():
@@ -714,7 +800,7 @@ def test_bead_loop_failures_beyond_runtime_error_are_recorded_as_bd_error(tmp_pa
     monkeypatch.setattr(harness, "bead_loop", boom)
     monkeypatch.setattr(harness, "_export", lambda trial, dest: [])
     test = dataclasses.replace(LANTERN, time_limit_s=30)
-    timed_out, out = harness.run_agent(trial, test, fake_agent("true"), "frontier")
+    out = harness.run_agent(trial, test, fake_agent("true"), "frontier").outcome
     assert out.bd_error == str(exc) and out.beads == 0
 
 
@@ -728,7 +814,7 @@ def test_export_failure_after_the_writing_phase_falls_back_to_the_brief(tmp_path
         return []
     monkeypatch.setattr(harness, "_export", flaky)
     test = dataclasses.replace(LANTERN, time_limit_s=60)
-    timed_out, out = harness.run_agent(trial, test, fake_agent("true"), "ornith")
+    out = harness.run_agent(trial, test, fake_agent("true"), "ornith").outcome
     assert out.roadmap_failed and out.sessions == 1 and out.bd_error is None
     assert calls == ["roadmap.jsonl", "beads-final.jsonl"]
 
