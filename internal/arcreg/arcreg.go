@@ -2,7 +2,6 @@
 package arcreg
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,12 +29,8 @@ func Detect(repoRoot string) (present bool, warn string) {
 	if err != nil {
 		return false, Warning
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, "module", "list", "--json")
-	cmd.Dir = repoRoot
-	if err := cmd.Run(); err != nil {
-		return false, Warning
+	if out, err := run(repoRoot, bin, "module", "list", "--json"); err != nil {
+		return false, Warning + " (`arc module list --json` failed: " + detail(out, err) + ")"
 	}
 	return true, ""
 }

@@ -3,6 +3,7 @@ package arcreg
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -44,7 +45,7 @@ func TestDetect(t *testing.T) {
 	})
 	t.Run("registry and old arc", func(t *testing.T) {
 		fakeArc(t, "2")
-		if present, warn := Detect(withRegistry(t)); present || warn != Warning {
+		if present, warn := Detect(withRegistry(t)); present || !strings.HasPrefix(warn, Warning) || !strings.Contains(warn, "failed: ") {
 			t.Errorf("got %v %q", present, warn)
 		}
 	})
