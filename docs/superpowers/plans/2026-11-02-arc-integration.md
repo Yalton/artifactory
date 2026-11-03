@@ -241,7 +241,7 @@ After a successful set or rm the command validates. If validation fails it resto
   5. commit.
 - [ ] `arc-registry.yaml` has one concept, `game`, with `paths: ["**"]`, a summary and `reason`. It ignores `.godot/**`, `bin/**`, `obj/**`, `*.uid`, `*.md` and `artifactory.yaml`.
 - [ ] Checker:
-  - the `arc_gate` result is the parsed `arc gate --all --json`, run with the trial's arc;
+  - the `arc_gate` result is the parsed `arc gate --base <fixture commit> --json`, run with the trial's arc (prepare_trial records the fixture commit hash; `--all` would skip the vendored changed-file check);
   - `result.py` gets an informational field (or `gating=False`), so `arc_gate` never decides `passed`;
   - `--arc` flows from `checker_command` to `cli.py check` to `check_godot`, and `run_checker` parsing is updated;
   - `round.json` records `"arc"`.

@@ -115,7 +115,7 @@ With arc on, module entries can only exist once kits are installed, and the mode
   - The harness runs `arc init --opencode --no-detect --ci none` for the opencode plugin and the rendered snippet, then deletes `.git/hooks/pre-commit`. Trials get no pre-commit gate, and the checker runs the gate at the end.
   - The harness commits the fixture before the model starts.
 - The trial prompt does not change.
-- The checker adds `arc_gate`: the result of `arc gate --all --json` run in the finished project. It is reported, not used as a pass condition.
+- The checker adds `arc_gate`: the result of `arc gate --base <fixture commit> --json` run in the finished project (`--all` skips the vendored changed-file check). It is reported, not used as a pass condition.
 - The round report counts denied writes, read from the opencode log, as evidence the guard fired.
 
 ### Evaluation
