@@ -68,12 +68,12 @@ func TestWriteAgentsBlockIsIdempotent(t *testing.T) {
 }
 
 var arcBullets = []string{
-	"- If a module here does what you need",
 	"- Never edit files inside an installed module",
 	"- Wire every module you install",
 }
 
 var keptBullets = []string{
+	"- If a module here does what you need",
 	"- Install a module only with its `install` command.",
 	"- Before finishing, build and run",
 	"- The Wiring section of the module's README",
