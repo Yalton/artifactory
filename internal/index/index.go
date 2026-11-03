@@ -15,8 +15,17 @@ const (
 	endMarker   = "<!-- artifactory:end -->"
 )
 
-func preamble(eco string) string {
-	text := standard.Preamble()
+// Options tune the rendered text.
+type Options struct {
+	// Arc leaves out the preamble bullets arc's own guidance replaces.
+	Arc bool
+	// CLIInstall shows `artifactory install NAME` as each module's install
+	// command, with the raw line after it.
+	CLIInstall bool
+}
+
+func preamble(eco string, opt Options) string {
+	text := standard.Preamble(opt.Arc)
 	if notes, ok := standard.Notes(eco); ok {
 		text += "\n\n## Project notes (" + eco + ")\n\n" + notes
 	}
@@ -24,16 +33,20 @@ func preamble(eco string) string {
 }
 
 // Render builds MODULES.md for the modules, matching the Python build_index.
-func Render(eco string, mods []descriptor.Descriptor) string {
+func Render(eco string, mods []descriptor.Descriptor, opt Options) string {
 	sorted := append([]descriptor.Descriptor{}, mods...)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
-	parts := []string{strings.TrimSpace(preamble(eco)), ""}
+	parts := []string{strings.TrimSpace(preamble(eco, opt)), ""}
 	for _, d := range sorted {
 		parts = append(parts, "## "+d.Name, "", d.Summary, "", "Use instead of writing:")
 		for _, r := range d.Replaces {
 			parts = append(parts, "- "+r)
 		}
-		parts = append(parts, "", "```", d.Install, "```", "")
+		if opt.CLIInstall {
+			parts = append(parts, "", "```", "artifactory install "+d.Name, "```", "", "(artifactory runs this for you; do not run it yourself: "+d.Install+")", "")
+		} else {
+			parts = append(parts, "", "```", d.Install, "```", "")
+		}
 		if len(d.Setup) > 0 {
 			parts = append(parts, "Setup:")
 			for _, s := range d.Setup {
@@ -46,8 +59,8 @@ func Render(eco string, mods []descriptor.Descriptor) string {
 }
 
 // AgentsBlock is the marked block placed in AGENTS.md.
-func AgentsBlock(eco string) string {
-	return beginMarker + "\n" + preamble(eco) + "\n\nSee MODULES.md for the modules in scope and their install commands.\n" + endMarker + "\n"
+func AgentsBlock(eco string, opt Options) string {
+	return beginMarker + "\n" + preamble(eco, opt) + "\n\nSee MODULES.md for the modules in scope and their install commands.\n" + endMarker + "\n"
 }
 
 // WriteAgents replaces the marked block in path, or appends it after a blank

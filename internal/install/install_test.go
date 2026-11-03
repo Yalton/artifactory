@@ -25,7 +25,7 @@ func TestGoModulePath(t *testing.T) {
 		{"go get", "", true},
 	}
 	for _, tt := range tests {
-		got, err := goModulePath(tt.line)
+		got, err := GoModulePath(tt.line)
 		if got != tt.want || (err != nil) != tt.wantErr {
 			t.Errorf("%q: got %q, %v", tt.line, got, err)
 		}

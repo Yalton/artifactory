@@ -9,13 +9,27 @@ import (
 //go:embed preamble.md consumer/*.md profiles/*.md
 var files embed.FS
 
-// Preamble returns the shared preamble text, trimmed.
-func Preamble() string {
+// arcMarker ends a preamble line that arc's own guidance replaces.
+const arcMarker = " <!-- arc -->"
+
+// Preamble returns the shared preamble text, trimmed. Lines marked with
+// <!-- arc --> lose the marker, or are dropped when arc is set.
+func Preamble(arc bool) string {
 	b, err := files.ReadFile("preamble.md")
 	if err != nil {
 		panic(err)
 	}
-	return strings.TrimSpace(string(b))
+	var out []string
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.HasSuffix(line, arcMarker) {
+			if arc {
+				continue
+			}
+			line = strings.TrimSuffix(line, arcMarker)
+		}
+		out = append(out, line)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
 // Notes returns the consumer notes for an ecosystem, trimmed. The bool is

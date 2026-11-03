@@ -18,14 +18,14 @@ import (
 // addons/<Name>. For go it is the module directory reported by `go list -m`
 // for the module path in the install line.
 func Locate(projectDir string, m catalog.Module) (string, error) {
-	if m.Ecosystem == "godot-csharp" {
+	if m.Ecosystem == descriptor.GodotCSharp {
 		dir := filepath.Join(projectDir, "addons", m.Name)
 		if _, err := os.Stat(dir); err != nil {
 			return "", fmt.Errorf("%s not found after install: %w", dir, err)
 		}
 		return dir, nil
 	}
-	path, err := goModulePath(m.Install)
+	path, err := GoModulePath(m.Install)
 	if err != nil {
 		return "", err
 	}
@@ -43,8 +43,8 @@ func Locate(projectDir string, m catalog.Module) (string, error) {
 	return dir, nil
 }
 
-// goModulePath extracts the module path from a `go get [flags] path[@ver]` line.
-func goModulePath(line string) (string, error) {
+// GoModulePath extracts the module path from a `go get [flags] path[@ver]` line.
+func GoModulePath(line string) (string, error) {
 	f := strings.Fields(line)
 	if len(f) < 3 || f[0] != "go" || f[1] != "get" {
 		return "", fmt.Errorf("install line %q is not a go get command", line)

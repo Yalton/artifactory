@@ -42,6 +42,9 @@ REPO = Path(__file__).resolve().parents[2]
 RESULTS = REPO / "results"
 GO_SAMPLES = REPO / "samples" / "go"
 GODOT_TEST = REPO / "tests" / "acceptance" / "godot-capsule-room"
+ARC_REGISTRY = GODOT_TEST / "arc-registry.yaml"
+DEFAULT_ARC_SRC = Path("/home/yalt/Documents/Projects/Tech/AI/arc")
+DENIAL_MARK = "do not edit it."  # the tail of arc's deny reason for a write inside an installed module
 BASELINE_README = Path("/data/fast/Projects/Tech/Games/Godot/Modules/README.md")
 
 MODEL = "agentbox/ornith-1.5-q4"
@@ -72,6 +75,8 @@ class RoundResult:
     test: str
     round: int
     results: list[TrialResult] = field(default_factory=list)
+    product: bool = False
+    arc: bool = False
 
     @property
     def passes(self) -> int:
@@ -85,6 +90,8 @@ class RoundResult:
         return json.dumps({
             "test": self.test,
             "round": self.round,
+            "product": self.product,
+            "arc": self.arc,
             "passes": self.passes,
             "met_bar": self.met_bar,
             "trials": [json.loads(r.to_json()) for r in self.results],
@@ -101,6 +108,7 @@ class Trial:
     proxy: Path | None
     env: dict[str, str]
     ro_binds: list[Path]
+    base_commit: str | None = None  # the fixture commit (arc mode), the checker's gate base
 
 
 # --- trial setup -----------------------------------------------------------
@@ -194,9 +202,43 @@ def _tool_binds(mirrors: Path | None, proxy: Path | None, bin_dir: Path) -> list
     return binds
 
 
+def _run_tool(argv: list[str], env: dict[str, str], home: Path, cwd: Path | None = None) -> None:
+    r = subprocess.run(argv, capture_output=True, text=True, cwd=cwd, env={**env, "HOME": str(home)})
+    if r.returncode != 0:
+        raise RuntimeError(f"{' '.join(argv[:2])} failed ({r.returncode}): {r.stderr.strip() or r.stdout.strip()}")
+
+
+def _product_setup(test: AcceptanceTest, cli: Path, project: Path, home: Path, bin_dir: Path,
+                   mirrors: Path | None, env: dict[str, str], arc: Path | None = None) -> None:
+    """Put the CLI in the trial bin, point the project at the local mirrors and run `artifactory index`.
+
+    With `arc` the project also gets arc: registry, opencode plugin, no pre-commit hook, and the
+    index registers modules with arc. The project must already be a git repository."""
+    if mirrors is None:
+        raise ValueError("--product needs local kit mirrors")
+    shutil.copy2(cli, bin_dir / "artifactory")
+    if arc is not None:
+        shutil.copy2(arc, bin_dir / "arc")
+    config = {"ecosystem": test.ecosystem, "provider": f"dir:{mirrors}",
+              "modules": [{"name": m} for m in test.modules]}
+    (project / "artifactory.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
+    if arc is not None:
+        (project / ".arch").mkdir(exist_ok=True)
+        shutil.copy2(ARC_REGISTRY, project / ".arch" / "registry.yaml")
+        _run_tool([str(bin_dir / "arc"), "init", "--opencode", "--no-detect", "--ci", "none"], env, home, project)
+        (project / ".git" / "hooks" / "pre-commit").unlink(missing_ok=True)
+    _run_tool([str(bin_dir / "artifactory"), "index", "--project", str(project), "--arc",
+               "on" if arc is not None else "off"], env, home)
+
+
 def prepare_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors: Path | None,
-                  proxy: Path | None) -> Trial:
-    """Create project (fixture + MODULES.md, committed), HOME and the godot launcher."""
+                  proxy: Path | None, cli: Path | None = None, arc: Path | None = None) -> Trial:
+    """Create project (fixture + MODULES.md, committed), HOME and the godot launcher.
+
+    With `cli` (product mode) the CLI is copied into the trial bin and writes MODULES.md itself.
+    With `arc` (arc mode, needs `cli`) arc is installed in the project too."""
+    if arc is not None and cli is None:
+        raise ValueError("--arc needs --product")
     trial_dir = Path(trial_dir).resolve()
     if trial_dir.exists():
         raise FileExistsError(f"{trial_dir} already exists; remove it to rerun the trial")
@@ -205,20 +247,26 @@ def prepare_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors:
     project, home, bin_dir = trial_dir / "project", trial_dir / "home", trial_dir / "bin"
     trial_dir.mkdir(parents=True)
     shutil.copytree(test.fixture, project, symlinks=True)
-    (project / "MODULES.md").write_text(index_md)
-    _git("init", "-q", "-b", "main", cwd=project)
-    _git("add", "-A", cwd=project)
-    _git("-c", f"user.name={TRIAL_NAME}", "-c", f"user.email={TRIAL_EMAIL}", "-c", "commit.gpgsign=false",
-         "commit", "-qm", "Initial project", cwd=project)
     home.mkdir()
     _write_home(home, mirrors)
     bin_dir.mkdir()
+    env = _base_env(home, bin_dir, proxy)
+    _git("init", "-q", "-b", "main", cwd=project)
+    if cli is not None:
+        _product_setup(test, Path(cli), project, home, bin_dir, mirrors, env, Path(arc) if arc else None)
+    else:
+        (project / "MODULES.md").write_text(index_md)
+    _git("add", "-A", cwd=project)
+    _git("-c", f"user.name={TRIAL_NAME}", "-c", f"user.email={TRIAL_EMAIL}", "-c", "commit.gpgsign=false",
+         "commit", "-qm", "Initial project", cwd=project)
+    base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=project, check=True, capture_output=True,
+                          text=True).stdout.strip() if arc is not None else None
     # A script, never a symlink: a symlinked Godot deadlocks headless.
     launcher = bin_dir / "godot"
     launcher.write_text(f'#!/bin/sh\nexec "{GODOT_BINARY}" "$@"\n')
     launcher.chmod(0o755)
     return Trial(trial_dir, project, home, bin_dir, mirrors, proxy,
-                 _base_env(home, bin_dir, proxy), _tool_binds(mirrors, proxy, bin_dir))
+                 env, _tool_binds(mirrors, proxy, bin_dir), base)
 
 
 # --- running ---------------------------------------------------------------
@@ -288,6 +336,8 @@ def checker_command(trial: Trial, test_dir: Path, ecosystem: str, fixture: Path,
         argv += ["--mirrors", str(trial.mirrors), "--branch", branch]
         if baseline:
             argv.append("--baseline")
+        if trial.base_commit is not None:
+            argv += ["--arc", "--arc-base", trial.base_commit]
     argv += ["-o", str(out)]
     env = _base_env(check_home, trial.bin, None)
     env["PATH"] = f"{trial.bin}:/usr/local/bin:/usr/bin"
@@ -311,7 +361,8 @@ def run_checker(trial: Trial, test: AcceptanceTest, test_dir: Path, branch: str,
     finished = _run_sandboxed(cmd, log, None, CHECKER_TIMEOUT_S)
     try:
         data = json.loads(out.read_text())
-        checks = [CheckResult(c["name"], bool(c["passed"]), c["detail"]) for c in data["checks"]]
+        checks = [CheckResult(c["name"], bool(c["passed"]), c["detail"], c.get("gating", True))
+                  for c in data["checks"]]
     except (OSError, ValueError, KeyError, TypeError) as e:
         why = "checker timed out" if not finished else f"checker produced no result ({type(e).__name__})"
         tail = log.read_text(errors="replace")[-2000:] if log.exists() else ""
@@ -321,9 +372,10 @@ def run_checker(trial: Trial, test: AcceptanceTest, test_dir: Path, branch: str,
 
 def run_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors: Path | None, proxy: Path | None,
               opencode_argv: list[str] | None = None, *, test_dir: Path | None = None,
-              branch: str = STITCH_BRANCH, baseline: bool = False) -> TrialResult:
+              branch: str = STITCH_BRANCH, baseline: bool = False, cli: Path | None = None,
+              arc: Path | None = None) -> TrialResult:
     """Set up the trial, run the agent sandboxed until done or time_limit_s, then check it sandboxed."""
-    trial = prepare_trial(test, index_md, trial_dir, mirrors, proxy)
+    trial = prepare_trial(test, index_md, trial_dir, mirrors, proxy, cli, arc)
     argv = opencode_argv if opencode_argv is not None else opencode_command(test.prompt)
     finished = _run_sandboxed(agent_command(trial, argv), trial.dir / "transcript.jsonl",
                               trial.dir / "opencode.log", test.time_limit_s)
@@ -331,6 +383,9 @@ def run_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors: Pat
     result = run_checker(trial, test, test_dir, branch, baseline)
     if not finished:
         result.reason = "timeout"
+    if arc is not None:
+        result.arc_denials = count_denials(trial.dir / "transcript.jsonl")
+        result.arc_hook_live = arc_hook_live(trial.project)
     (trial.dir / "checker.json").write_text(result.to_json())
     return result
 
@@ -346,6 +401,33 @@ def build_cli(out: Path) -> Path:
     if r.returncode != 0:
         raise RuntimeError(f"go build failed: {r.stderr.strip()}")
     return binary
+
+
+def build_arc(out: Path, src: Path | None = None) -> Path:
+    """Build `arc` from its source tree (default $ARC_SRC, else the main checkout) into <out>/bin/arc."""
+    src = Path(src or os.environ.get("ARC_SRC") or DEFAULT_ARC_SRC)
+    binary = Path(out) / "bin" / "arc"
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    r = subprocess.run(["go", "build", "-o", str(binary), "./cmd/arc"], cwd=src, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"arc build failed in {src}: {r.stderr.strip()}")
+    return binary
+
+
+def arc_hook_live(project: Path) -> bool:
+    """Whether arc's hook ran in the trial: it keeps per-session state in .arch/cache/hook-<session>.json
+    (arc SPEC, "arc hook"), and only a hook that loaded and ran under the agent writes it."""
+    return any((Path(project) / ".arch" / "cache").glob("hook-*.json"))
+
+
+def count_denials(transcript: Path) -> int:
+    """How often arc refused a write: its deny reason as the model saw it in the opencode stdout."""
+    # Deliberately a plain substring count over the raw transcript, not a parse of tool events:
+    # it also counts the phrase if the model quotes it in its own text. Good enough as a tally.
+    try:
+        return Path(transcript).read_text(errors="replace").count(DENIAL_MARK)
+    except OSError:
+        return 0
 
 
 def render_index(cli: Path, ecosystem: str, provider: str, modules: list[str]) -> str:
@@ -365,11 +447,16 @@ def _go_sample_dirs() -> list[Path]:
 
 
 def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = False, *,
-              results_root: Path | None = None, opencode_argv: list[str] | None = None) -> RoundResult:
+              results_root: Path | None = None, opencode_argv: list[str] | None = None,
+              product: bool = False, arc: bool = False, arc_src: Path | None = None) -> RoundResult:
     test_dir = Path(test_dir).resolve()
     test = load_acceptance(test_dir)
     root = Path(results_root or RESULTS).resolve()
-    mirrors = proxy = None
+    mirrors = proxy = cli = arc_bin = None
+    if arc and not product:
+        raise ValueError("--arc needs --product")
+    if product and (baseline or test.ecosystem == "go"):
+        raise ValueError("--product is defined for non-baseline Godot rounds only")
     branch = BASELINE_BRANCH if baseline else STITCH_BRANCH
     if test.ecosystem == "go":
         if baseline:
@@ -390,15 +477,19 @@ def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = F
                 raise RuntimeError(f"no mirror at {mirrors / (name + '.git')}; run `artifactory mirror` first")
         if baseline:
             index_md = BASELINE_README.read_text()
+        elif product:
+            cli = build_cli(root)
+            arc_bin = build_arc(root, arc_src) if arc else None
+            index_md = ""  # the CLI renders MODULES.md in each trial
         else:
             index_md = render_index(build_cli(root), test.ecosystem, f"dir:{mirrors}", test.modules)
 
     out = root / test.name / ("baseline" if baseline else f"round-{round_no}")
     out.mkdir(parents=True, exist_ok=True)
-    result = RoundResult(test.name, round_no)
+    result = RoundResult(test.name, round_no, product=product, arc=arc)
     for k in range(1, trials + 1):
         tr = run_trial(test, index_md, out / f"trial-{k}", mirrors, proxy, opencode_argv,
-                       test_dir=test_dir, branch=branch, baseline=baseline)
+                       test_dir=test_dir, branch=branch, baseline=baseline, cli=cli, arc=arc_bin)
         result.results.append(tr)
         (out / "round.json").write_text(result.to_json())
     (out / "round.json").write_text(result.to_json())

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"repo.billbert.co/artifactory/artifactory/internal/arcreg"
 	"repo.billbert.co/artifactory/artifactory/internal/catalog"
 	"repo.billbert.co/artifactory/artifactory/internal/descriptor"
 	"repo.billbert.co/artifactory/artifactory/internal/index"
@@ -147,15 +148,59 @@ func (a App) Show(ctx context.Context, spec, projectDir, name string) (ShowResul
 type IndexResult struct {
 	Written []string `json:"written"`
 	Modules int      `json:"modules"`
+	// Arc is true when the preamble was rendered without the bullets arc's own
+	// guidance replaces: arc is on and its registry holds a module.
+	Arc bool `json:"arc"`
+	// Warning is set when a registry exists but arc cannot be used.
+	Warning string `json:"warning,omitempty"`
+	// Warnings lists arc registration failures; the index itself succeeded.
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+// Arc modes for Index: auto detects arc, on requires it, off ignores it.
+const (
+	ArcAuto = "auto"
+	ArcOn   = "on"
+	ArcOff  = "off"
+)
+
+// resolveArc decides whether the project is rendered for arc.
+func resolveArc(dir, mode string) (bool, string, error) {
+	switch mode {
+	case "", ArcAuto:
+		present, warn := arcreg.Detect(arcreg.Toplevel(dir))
+		return present, warn, nil
+	case ArcOff:
+		return false, "", nil
+	case ArcOn:
+		if present, warn := arcreg.Detect(arcreg.Toplevel(dir)); !present {
+			if warn == "" {
+				warn = "no " + arcreg.RegistryPath
+			}
+			return false, "", usageErr(errors.New("--arc on: " + arcreg.RegistryPath + " and a working `arc module list --json` are required: " + warn))
+		}
+		return true, "", nil
+	}
+	return false, "", usageErr(errors.New("--arc must be auto, on or off"))
 }
 
 // Index rewrites MODULES.md and, unless modulesOnly, the AGENTS.md block.
-func (a App) Index(ctx context.Context, dir string, modulesOnly bool) (IndexResult, error) {
+// arcMode is auto, on or off (empty means auto). A full index shows each
+// module's install command as `artifactory install NAME`; modulesOnly keeps
+// the raw install line.
+func (a App) Index(ctx context.Context, dir string, modulesOnly bool, arcMode string) (IndexResult, error) {
 	f, err := project.Load(dir)
 	if err != nil {
 		return IndexResult{}, usageErr(errors.New(loadProjectMsg(err)))
 	}
+	arc, warn, err := resolveArc(dir, arcMode)
+	if err != nil {
+		return IndexResult{}, err
+	}
+	opt := index.Options{CLIInstall: !modulesOnly}
 	var ds []descriptor.Descriptor
+	var reg []arcreg.Entry
+	var skipped []string
 	if len(f.Modules) > 0 {
 		p, err := a.ResolveProvider("", dir)
 		if err != nil {
@@ -171,19 +216,58 @@ func (a App) Index(ctx context.Context, dir string, modulesOnly bool) (IndexResu
 				return IndexResult{}, problemErr("module " + e.Name + " is in scope but not in the catalog")
 			}
 			ds = append(ds, m.Descriptor)
+			if e.Version != "" {
+				ae, err := arcEntry(m)
+				if err != nil {
+					skipped = append(skipped, "arc: "+m.Name+" not registered: "+err.Error())
+					reg = append(reg, arcreg.Entry{ID: m.Name, Keep: true})
+					continue
+				}
+				reg = append(reg, ae)
+			}
 		}
 	}
+	var warnings []string
+	if arc {
+		// Register first: arc's own rendered guidance exists only once its
+		// registry holds a module, so the preamble drops its bullets then.
+		n, w := arcreg.SyncCount(dir, reg)
+		warnings = append(skipped, w...)
+		opt.Arc = n > 0
+	}
 	written := []string{"MODULES.md"}
-	if err := os.WriteFile(filepath.Join(dir, "MODULES.md"), []byte(index.Render(f.Ecosystem, ds)), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "MODULES.md"), []byte(index.Render(f.Ecosystem, ds, opt)), 0o644); err != nil {
 		return IndexResult{}, usageErr(err)
 	}
 	if !modulesOnly {
-		if err := index.WriteAgents(filepath.Join(dir, "AGENTS.md"), index.AgentsBlock(f.Ecosystem)); err != nil {
+		if err := index.WriteAgents(filepath.Join(dir, "AGENTS.md"), index.AgentsBlock(f.Ecosystem, opt)); err != nil {
 			return IndexResult{}, usageErr(err)
 		}
 		written = append(written, "AGENTS.md")
 	}
-	return IndexResult{Written: written, Modules: len(ds)}, nil
+	return IndexResult{Written: written, Modules: len(ds), Arc: opt.Arc, Warning: warn, Warnings: warnings}, nil
+}
+
+// arcEntry maps an installed module's descriptor to its arc registry entry.
+// Godot modules own addons/<Name>; go modules are imported by path.
+func arcEntry(m catalog.Module) (arcreg.Entry, error) {
+	d := m.Descriptor
+	e := arcreg.Entry{ID: m.Name, Summary: d.Summary, Covers: d.Replaces, Entry: d.Entry}
+	if d.Ecosystem == descriptor.GodotCSharp {
+		e.Paths = []string{"addons/" + m.Name + "/**"}
+	} else {
+		p, err := install.GoModulePath(d.Install)
+		if err != nil {
+			return arcreg.Entry{}, err
+		}
+		e.Import = p
+	}
+	rules := []string{"Print `" + d.Liveness + "` at startup."}
+	if len(d.Setup) > 0 {
+		rules = append(rules, "Setup: "+strings.Join(d.Setup, "; ")+".")
+	}
+	e.Rules = []string{strings.Join(rules, " ")}
+	return e, nil
 }
 
 // LoadProjectMsg turns a project.Load error into the CLI message.
@@ -264,7 +348,7 @@ func (a App) Install(ctx context.Context, dir string, names []string, progress f
 		res.Installed = append(res.Installed, Installed{m.Name, v})
 		say(fmt.Sprintf("installed %s (v%s)", m.Name, strings.TrimPrefix(v, "v")))
 	}
-	res.Index, err = a.Index(ctx, dir, false)
+	res.Index, err = a.Index(ctx, dir, false, ArcAuto)
 	return res, err
 }
 
@@ -282,7 +366,7 @@ func (a App) partial(ctx context.Context, dir string, res InstallResult, err err
 		names = append(names, fmt.Sprintf("%s (v%s)", in.Name, strings.TrimPrefix(in.Version, "v")))
 	}
 	msg := e.Msg + "; installed before the failure: " + strings.Join(names, ", ")
-	idx, ierr := a.Index(ctx, dir, false)
+	idx, ierr := a.Index(ctx, dir, false, ArcAuto)
 	if ierr != nil {
 		msg += "; re-index failed: " + ierr.Error()
 	} else {
