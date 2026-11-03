@@ -866,6 +866,14 @@ def test_workspace_beads_export_as_roadmap_writer(workspace, tmp_path):
     assert [json.loads(line)["created_by"] for line in out.read_text().splitlines()] == ["roadmap-writer"]
 
 
+def test_export_takes_a_destination_relative_to_the_caller(workspace, tmp_path, monkeypatch):
+    trial, _ = workspace
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "out").mkdir()
+    harness.export_roadmap(trial.project, Path("out/frontier.jsonl"))
+    assert (tmp_path / "out" / "frontier.jsonl").exists()
+
+
 def test_export_refuses_an_in_progress_bead(workspace, tmp_path):
     trial, prefix = workspace
     bid = json.loads(sh(prefix, "bd create 'claimed bead' -p 2 --json", trial.project).stdout)["id"]
