@@ -158,6 +158,11 @@ func printIndex(out *output, res app.IndexResult) {
 	if res.Warning != "" && !out.json {
 		fmt.Fprintln(out.stderr, "artifactory: warning: "+res.Warning)
 	}
+	if !out.json {
+		for _, w := range res.Warnings {
+			fmt.Fprintln(out.stderr, "artifactory: warning: "+w)
+		}
+	}
 	out.result("wrote "+strings.Join(res.Written, ", "), res)
 }
 

@@ -2,9 +2,11 @@
 package arcreg
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 )
 
 // RegistryPath is the arc registry, relative to a repository root.
@@ -12,6 +14,9 @@ const RegistryPath = ".arch/registry.yaml"
 
 // Warning is returned when a registry exists but arc cannot use it.
 const Warning = "arc registry found but arc with module support is not on PATH; module rules not registered"
+
+// Timeout bounds every arc call.
+const Timeout = 30 * time.Second
 
 // Detect reports whether arc manages repoRoot: the repository has an arc
 // registry and `arc module list --json` exits 0. When the registry exists
@@ -25,7 +30,9 @@ func Detect(repoRoot string) (present bool, warn string) {
 	if err != nil {
 		return false, Warning
 	}
-	cmd := exec.Command(bin, "module", "list", "--json")
+	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "module", "list", "--json")
 	cmd.Dir = repoRoot
 	if err := cmd.Run(); err != nil {
 		return false, Warning

@@ -152,6 +152,8 @@ type IndexResult struct {
 	Arc bool `json:"arc"`
 	// Warning is set when a registry exists but arc cannot be used.
 	Warning string `json:"warning,omitempty"`
+	// Warnings lists arc registration failures; the index itself succeeded.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // Arc modes for Index: auto detects arc, on requires it, off ignores it.
@@ -165,12 +167,12 @@ const (
 func resolveArc(dir, mode string) (bool, string, error) {
 	switch mode {
 	case "", ArcAuto:
-		present, warn := arcreg.Detect(dir)
+		present, warn := arcreg.Detect(arcreg.Toplevel(dir))
 		return present, warn, nil
 	case ArcOff:
 		return false, "", nil
 	case ArcOn:
-		if present, warn := arcreg.Detect(dir); !present {
+		if present, warn := arcreg.Detect(arcreg.Toplevel(dir)); !present {
 			if warn == "" {
 				warn = "no " + arcreg.RegistryPath
 			}
@@ -196,6 +198,7 @@ func (a App) Index(ctx context.Context, dir string, modulesOnly bool, arcMode st
 	}
 	opt := index.Options{Arc: arc, CLIInstall: !modulesOnly}
 	var ds []descriptor.Descriptor
+	var reg []arcreg.Entry
 	if len(f.Modules) > 0 {
 		p, err := a.ResolveProvider("", dir)
 		if err != nil {
@@ -211,6 +214,9 @@ func (a App) Index(ctx context.Context, dir string, modulesOnly bool, arcMode st
 				return IndexResult{}, problemErr("module " + e.Name + " is in scope but not in the catalog")
 			}
 			ds = append(ds, m.Descriptor)
+			if e.Version != "" {
+				reg = append(reg, arcEntry(m))
+			}
 		}
 	}
 	written := []string{"MODULES.md"}
@@ -223,7 +229,29 @@ func (a App) Index(ctx context.Context, dir string, modulesOnly bool, arcMode st
 		}
 		written = append(written, "AGENTS.md")
 	}
-	return IndexResult{Written: written, Modules: len(ds), Arc: arc, Warning: warn}, nil
+	res := IndexResult{Written: written, Modules: len(ds), Arc: arc, Warning: warn}
+	if arc {
+		res.Warnings = arcreg.Sync(dir, reg)
+	}
+	return res, nil
+}
+
+// arcEntry maps an installed module's descriptor to its arc registry entry.
+// Godot modules own addons/<Name>; go modules are imported by path.
+func arcEntry(m catalog.Module) arcreg.Entry {
+	d := m.Descriptor
+	e := arcreg.Entry{ID: m.Name, Summary: d.Summary, Covers: d.Replaces, Entry: d.Entry}
+	if d.Ecosystem == "godot-csharp" {
+		e.Paths = []string{"addons/" + m.Name + "/**"}
+	} else if p, err := install.GoModulePath(d.Install); err == nil {
+		e.Import = p
+	}
+	rules := []string{"Print `" + d.Liveness + "` at startup."}
+	if len(d.Setup) > 0 {
+		rules = append(rules, "Setup: "+strings.Join(d.Setup, "; ")+".")
+	}
+	e.Rules = []string{strings.Join(rules, " ")}
+	return e
 }
 
 // LoadProjectMsg turns a project.Load error into the CLI message.

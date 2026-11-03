@@ -12,6 +12,8 @@ Artifactory is a catalog of stitchable modules. Reuse beats writing. The project
 3. A hit that covers the need is the answer: use it. Nothing is written in its place.
 4. Done when every need has a module or a recorded gap.
 
+With arc present, run `arc find <words>` before writing a new piece.
+
 ## Using a module
 
 - Install with `artifactory install NAME...` and nothing else. It runs the module's own install line and records it in `artifactory.yaml`.
