@@ -3,11 +3,19 @@ You are writing a roadmap: a set of work items (beads) for a game that other ses
 The game is described in `BRIEF.md` in the project root. Each bead you write will be worked later by a fresh session that cannot see `BRIEF.md`, so each bead must say everything that session needs.
 
 Commands you can run:
-- `artifactory search <terms>` finds modules (reusable code packages) that cover a need.
+- `artifactory search <terms>` finds modules (reusable code packages) that cover a need. It matches words, so use a short noun phrase such as `scene fade transition`.
 - `artifactory show <Name>` shows what one module does and how to use it.
-- `bd create "Title" -d "description" -l gap` creates a bead. Leave out `-l gap` when it does not apply.
-- `bd dep add <issue> <depends-on>` makes `<issue>` wait until `<depends-on>` is closed.
-- `bd list` lists the beads you have made so far.
+- `bd create "Title" --silent --stdin <<'EOF'` creates a bead. Put the description on the lines after it and end with a line that says only `EOF`. The quotes around `EOF` matter: they keep backticks and `$` in the description as typed. Add `-l gap` before `--stdin` when the bead is a gap (see step 4). Never put a description inside double quotes on the command line, because backticks there run as shell commands.
+  Example:
+  ```
+  bd create "Title" -l gap --silent --stdin <<'EOF'
+  Description text, with `backticks` kept as written.
+  Modules: none
+  EOF
+  ```
+  With `--silent`, `bd create` prints only the new bead's id. Write the ids down.
+- `bd dep add <issue> <depends-on>` makes `<issue>` wait until `<depends-on>` is closed. Both are ids printed by `bd create`.
+- `bd list` lists the beads you have made so far, with their ids.
 
 Steps:
 1. Read `BRIEF.md` in full.

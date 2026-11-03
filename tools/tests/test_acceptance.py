@@ -31,7 +31,7 @@ def test_lantern_keep_has_roadmap_prompt_and_probe():
     assert t.modules == GODOT and t.time_limit_s == 14400
     assert t.probe == "lantern"
     assert t.roadmap_prompt and "BRIEF.md" in t.roadmap_prompt
-    assert "Modules:" in t.roadmap_prompt and "gap" in t.roadmap_prompt
+    assert "Modules:" in t.roadmap_prompt and "-l gap" in t.roadmap_prompt
     assert "Write the roadmap only. Do not build anything." in t.roadmap_prompt
     assert t.dir == (ROOT / "tests/acceptance/godot-lantern-keep").resolve()
     assert (t.fixture / "project.godot").is_file()
