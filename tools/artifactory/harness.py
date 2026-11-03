@@ -364,7 +364,7 @@ def prepare_roadmap_workspace(test: AcceptanceTest, out_dir: Path, mirrors: Path
 def export_roadmap(project: Path, dest: Path) -> int:
     """Export the writer's beads to `dest` (jsonl) and return how many; refuse a roadmap the writer left
     claimed or that a different actor touched (a bead the build would trip over, or not frontier's own)."""
-    project, dest = Path(project).resolve(), Path(dest)
+    project, dest = Path(project).resolve(), Path(dest).resolve()  # bd runs in the project
     env = bd_env(WRITER_ACTOR, project.parent / "home")
     tmp = dest.with_name(f".{dest.name}.tmp")  # moved into place only once the beads pass
     try:
