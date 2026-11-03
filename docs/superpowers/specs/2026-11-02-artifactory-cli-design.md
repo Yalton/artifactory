@@ -93,7 +93,7 @@ When a roadmap is written, each bead names the modules it uses, or says it uses 
 
 `tools/artifactory/harness.py` stops building the index itself (`index.py`). For each trial, it calls `artifactory init` and `artifactory index` in the trial project, with the acceptance test's module list written into `artifactory.yaml`. The trial prompt then refers to `MODULES.md` and the `AGENTS.md` block as before. Trials can see the same text as round 6, or the CLI can deliberately change it. If it changes, the round report says so.
 
-`artifactory round TEST_DIR --product` runs the trials through the CLI as above. Adding `--arc` installs arc in each trial (registry and opencode plugin, built from `--arc-src DIR` or `$ARC_SRC`), and the checker reports `arc_gate`. `arc_gate` is informational: it never decides `passed`. The result also records `arc_denials`, the number of edits the arc hook refused, counted from the trial transcript. `check --arc --arc-base COMMIT` reports the gate for one trial project (Godot).
+`artifactory round TEST_DIR --product` runs the trials through the CLI as above. Adding `--arc` installs arc in each trial (registry and opencode plugin, built from `--arc-src DIR` or `$ARC_SRC`), and the checker reports `arc_gate`. `arc_gate` is informational: it never decides `passed`. The result also records `arc_denials`, the number of edits the arc hook refused, counted from the trial transcript, and `arc_hook_live`, true when arc's hook left session state (`.arch/cache/hook-*.json`) in the trial project. A false `arc_hook_live` means the hook never ran, so a zero `arc_denials` says nothing. Both are informational. `check --arc --arc-base COMMIT` reports the gate for one trial project (Godot).
 
 ## Constraints
 

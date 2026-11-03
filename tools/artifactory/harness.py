@@ -385,6 +385,7 @@ def run_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors: Pat
         result.reason = "timeout"
     if arc is not None:
         result.arc_denials = count_denials(trial.dir / "transcript.jsonl")
+        result.arc_hook_live = arc_hook_live(trial.project)
     (trial.dir / "checker.json").write_text(result.to_json())
     return result
 
@@ -411,6 +412,12 @@ def build_arc(out: Path, src: Path | None = None) -> Path:
     if r.returncode != 0:
         raise RuntimeError(f"arc build failed in {src}: {r.stderr.strip()}")
     return binary
+
+
+def arc_hook_live(project: Path) -> bool:
+    """Whether arc's hook ran in the trial: it keeps per-session state in .arch/cache/hook-<session>.json
+    (arc SPEC, "arc hook"), and only a hook that loaded and ran under the agent writes it."""
+    return any((Path(project) / ".arch" / "cache").glob("hook-*.json"))
 
 
 def count_denials(transcript: Path) -> int:

@@ -298,6 +298,21 @@ def test_denial_counter_counts_recorded_transcript(tmp_path):
     assert harness.count_denials(tmp_path / "missing.jsonl") == 0
 
 
+def test_arc_hook_liveness_follows_session_state(tmp_path):
+    assert harness.arc_hook_live(tmp_path) is False
+    (tmp_path / ".arch" / "cache").mkdir(parents=True)
+    assert harness.arc_hook_live(tmp_path) is False
+    (tmp_path / ".arch" / "cache" / "hook-ses_1.json").write_text("{}")
+    assert harness.arc_hook_live(tmp_path) is True
+
+
+def test_trial_json_records_hook_liveness():
+    r = TrialResult("t", "trial-1", arc_denials=0, arc_hook_live=False)
+    data = json.loads(r.to_json())
+    assert data["arc_hook_live"] is False and data["arc_denials"] == 0
+    assert json.loads(TrialResult("t", "trial-1").to_json())["arc_hook_live"] is None
+
+
 def test_round_json_records_arc():
     assert json.loads(RoundResult("t", 1, product=True, arc=True).to_json())["arc"] is True
     assert json.loads(RoundResult("t", 1).to_json())["arc"] is False
@@ -361,7 +376,9 @@ def test_arc_gate_check_reports_findings_without_gating(cli, tmp_path):
     old = os.environ["PATH"]
     os.environ["PATH"] = f"{trial.bin}:{old}"
     try:
-        clean = _check_arc_gate(trial.project, trial.base_commit)
+        clean_copy = tmp_path / "clean-copy"  # the checker never snapshots into the trial itself
+        shutil.copytree(trial.project, clean_copy, symlinks=True)
+        clean = _check_arc_gate(clean_copy, trial.base_commit)
         # Uncommitted work: a file over the registry's file_lines limit (1000) is a size finding.
         (trial.project / "Big.cs").write_text("// x\n" * 1100)
         copy = tmp_path / "copy"  # the checker works on a disposable copy

@@ -23,6 +23,9 @@ class TrialResult:
     reason: str | None = None
     # Arc mode only: how many writes arc denied (set by the harness from the transcript).
     arc_denials: int | None = None
+    # Arc mode only: True when arc's hook left session state in the trial project, so it ran at
+    # least once under the agent. False makes `arc_denials: 0` meaningless. Informational.
+    arc_hook_live: bool | None = None
 
     @property
     def passed(self) -> bool:
@@ -36,6 +39,7 @@ class TrialResult:
                 "passed": self.passed,
                 "reason": self.reason,
                 "arc_denials": self.arc_denials,
+                "arc_hook_live": self.arc_hook_live,
                 "checks": [{k: v for k, v in asdict(c).items() if k != "gating" or not v} for c in self.checks],
             },
             indent=2,
