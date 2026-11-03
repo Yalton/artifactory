@@ -26,21 +26,23 @@ class TrialResult:
     # Arc mode only: True when arc's hook left session state in the trial project, so it ran at
     # least once under the agent. False makes `arc_denials: 0` meaningless. Informational.
     arc_hook_live: bool | None = None
+    # Roadmap trials only (frontier, ornith): bead counts and build-loop flags. Omitted from JSON otherwise.
+    roadmap: dict | None = None
 
     @property
     def passed(self) -> bool:
         return self.reason is None and all(c.passed for c in self.checks if c.gating)
 
     def to_json(self) -> str:
-        return json.dumps(
-            {
-                "test": self.test,
-                "trial": self.trial,
-                "passed": self.passed,
-                "reason": self.reason,
-                "arc_denials": self.arc_denials,
-                "arc_hook_live": self.arc_hook_live,
-                "checks": [{k: v for k, v in asdict(c).items() if k != "gating" or not v} for c in self.checks],
-            },
-            indent=2,
-        )
+        data = {
+            "test": self.test,
+            "trial": self.trial,
+            "passed": self.passed,
+            "reason": self.reason,
+            "arc_denials": self.arc_denials,
+            "arc_hook_live": self.arc_hook_live,
+        }
+        if self.roadmap is not None:
+            data["roadmap"] = self.roadmap
+        data["checks"] = [{k: v for k, v in asdict(c).items() if k != "gating" or not v} for c in self.checks]
+        return json.dumps(data, indent=2)

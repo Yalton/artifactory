@@ -8,6 +8,10 @@ Layout of one trial directory:
       bin/godot         launcher for the real Godot binary (read-only in the sandbox)
       transcript.jsonl  opencode JSON events (stdout)
       opencode.log      opencode stderr
+      transcript-<n>.jsonl, opencode-<n>.log
+                        the same per session, in roadmap trials (frontier, ornith)
+      roadmap.jsonl     ornith: the beads its writing session created
+      beads-final.jsonl roadmap trials: every bead at the end of the build loop
       checker-home/     HOME for the checker run (the only writable path then)
       checker.log       checker output
       checker.json      the final TrialResult, including the harness reason
@@ -27,7 +31,7 @@ import sys
 import tempfile
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import yaml
@@ -67,6 +71,14 @@ TRIAL_EMAIL = "trial@artifactory.invalid"
 CHECKER_TIMEOUT_S = 3600
 PASS_BAR = 4
 
+ROADMAPS = ("none", "frontier", "ornith")
+WRITING_LIMIT_S = 1200  # the ornith writing phase's share of the trial budget, at most
+QUICK_SESSION_S = 60    # a loop session shorter than this, with no bead status change, is "quick"
+STALL_RUN = 3           # this many quick sessions in a row stop the loop (a dead model server)
+BEAD_PROMPT = "Work bead {id}. Run bd show {id} first, do only what it says, run its check, then bd close {id}."
+STALL_PROMPT = ("Some beads are unfinished. Run bd list --status open,blocked and work through them in any order, "
+                "ignoring dependencies. Close each one you finish.")
+
 GO_ENV_KEYS = ("GOPROXY", "GONOSUMDB", "GOFLAGS", "GOMODCACHE", "GOPATH", "GOTOOLCHAIN", "GOWORK")
 
 
@@ -77,6 +89,7 @@ class RoundResult:
     results: list[TrialResult] = field(default_factory=list)
     product: bool = False
     arc: bool = False
+    roadmap: str = "none"
 
     @property
     def passes(self) -> int:
@@ -92,6 +105,7 @@ class RoundResult:
             "round": self.round,
             "product": self.product,
             "arc": self.arc,
+            "roadmap": self.roadmap,
             "passes": self.passes,
             "met_bar": self.met_bar,
             "trials": [json.loads(r.to_json()) for r in self.results],
@@ -213,11 +227,16 @@ def bd_binary() -> Path:
     found = shutil.which("bd")
     if found:
         real = Path(found).resolve().parent / "bd"  # the wrapper resolves to bd.js beside the binary
-        if real.is_file() and real.read_bytes()[:4] == b"\x7fELF":
+        if real.is_file() and _magic(real) == b"\x7fELF":
             return real
     if BD_FALLBACK.is_file():
         return BD_FALLBACK.resolve()
     raise FileNotFoundError(f"bd not found: neither the package beside `which bd` nor {BD_FALLBACK}")
+
+
+def _magic(path: Path) -> bytes:
+    with open(path, "rb") as f:  # the binary is ~150 MB and this runs on every bd call
+        return f.read(4)
 
 
 def bd_env(actor: str, home: Path) -> dict[str, str]:
@@ -227,6 +246,8 @@ def bd_env(actor: str, home: Path) -> dict[str, str]:
 
 def bd_run(project: Path, env: dict, *args) -> subprocess.CompletedProcess:
     """Run bd in `project` with `env`, host-side. env must carry bd_env's values; PATH defaults to the host's (bd runs git)."""
+    if "HOME" not in env:  # never fall back to the user's HOME: bd would write ~/.beads there
+        raise ValueError("bd_run needs HOME in env (see bd_env)")
     return subprocess.run([str(bd_binary()), *args], cwd=project, env={"PATH": os.environ["PATH"], **env}, capture_output=True, text=True)
 
 
@@ -402,21 +423,175 @@ def run_checker(trial: Trial, test: AcceptanceTest, test_dir: Path, branch: str,
     return TrialResult(test=test.name, trial=trial.dir.name, checks=checks, reason=None)
 
 
+@dataclass
+class RoadmapOutcome:
+    """A roadmap trial's bead counts (from the final export) and how its build loop went."""
+    beads: int = 0
+    closed: int = 0
+    blocked: int = 0
+    sessions: int = 0        # build-phase sessions: bead, stall, or the brief fallback; not the writing session
+    stall_sessions: int = 0
+    roadmap_failed: bool = False  # ornith wrote no beads; the build was one session with the brief
+    loop_stalled: bool = False    # STALL_RUN quick sessions in a row with no bead status change
+    bd_error: str | None = None   # host-side bd failed (say the agent broke .beads); the loop stopped there
+
+
+class _Sessions:
+    """Fresh agent sessions in one trial, all against one deadline. Session n writes transcript-<n>.jsonl."""
+
+    def __init__(self, trial: Trial, opencode_argv: list[str] | None, time_limit_s: float):
+        self.trial, self.argv = trial, opencode_argv
+        self.deadline = time.monotonic() + time_limit_s
+        self.n = 0
+        self.killed_at_deadline = False  # the last session's fate: the timeout rule reads only this
+
+    def remaining(self) -> float:
+        return self.deadline - time.monotonic()
+
+    def run(self, prompt: str, cap: float | None = None) -> float:
+        """Run one session (limit: the time left, or `cap` if smaller); return its duration."""
+        self.n += 1
+        left = self.remaining()
+        limit = left if cap is None else min(cap, left)
+        argv = self.argv + [prompt] if self.argv is not None else opencode_command(prompt)
+        start = time.monotonic()
+        finished = _run_sandboxed(agent_command(self.trial, argv), self.trial.dir / f"transcript-{self.n}.jsonl",
+                                  self.trial.dir / f"opencode-{self.n}.log", max(limit, 0))
+        self.killed_at_deadline = not finished and limit == left
+        return time.monotonic() - start
+
+
+def _bd_json(trial: Trial, *args: str):
+    r = bd_run(trial.project, trial.env, *args, "--json")
+    if r.returncode != 0:
+        raise RuntimeError(f"bd {' '.join(args)} failed ({r.returncode}): {r.stderr.strip() or r.stdout.strip()}")
+    return json.loads(r.stdout or "null") or []
+
+
+def _bd_ok(trial: Trial, *args: str) -> None:
+    r = bd_run(trial.project, trial.env, *args)
+    if r.returncode != 0:
+        raise RuntimeError(f"bd {' '.join(args[:2])} failed ({r.returncode}): {r.stderr.strip() or r.stdout.strip()}")
+
+
+def _bead_states(trial: Trial) -> dict[str, str]:
+    return {b["id"]: b["status"] for b in _bd_json(trial, "list", "--all", "--limit", "0")}
+
+
+def _export(trial: Trial, dest: Path) -> list[dict]:
+    _bd_ok(trial, "export", "-o", str(dest))
+    return [json.loads(line) for line in dest.read_text().splitlines() if line.strip()]
+
+
+def _writing_phase(trial: Trial, test: AcceptanceTest, sessions: _Sessions) -> int:
+    """One ornith session writes the roadmap from BRIEF.md; return how many beads it created.
+
+    BRIEF.md is removed afterwards: bead sessions never see the brief, as in frontier."""
+    brief = trial.project / "BRIEF.md"
+    brief.write_text(test.prompt)
+    with open(trial.project / ".git" / "info" / "exclude", "a") as f:
+        f.write("\nBRIEF.md\n")
+    try:
+        sessions.run(test.roadmap_prompt, WRITING_LIMIT_S)
+    finally:
+        brief.unlink(missing_ok=True)
+    return len(_export(trial, trial.dir / "roadmap.jsonl"))
+
+
+def bead_loop(trial: Trial, sessions: _Sessions, out: RoadmapOutcome) -> None:
+    """Work beads one fresh session at a time until all are closed, time is up, or sessions stall.
+
+    Ready beads get a bead session, and a second if the first leaves them unclosed; then they are
+    set blocked with a note. With nothing ready but beads unfinished, a stall session works them
+    regardless of dependencies, and the loop goes back to `bd ready`, so no time is left unused."""
+    failures: dict[str, int] = {}
+    retry = None
+    quick = 0
+    while sessions.remaining() > 0:
+        before = _bead_states(trial)
+        for bid in [b for b, st in before.items() if st == "in_progress"]:  # claimed by a finished session
+            _bd_ok(trial, "update", bid, "--status", "open")
+            before[bid] = "open"
+        ready = [b["id"] for b in _bd_json(trial, "ready", "--limit", "0")]
+        if ready:
+            bead = retry if retry in ready else ready[0]
+            prompt = BEAD_PROMPT.format(id=bead)
+        elif any(st in ("open", "in_progress", "blocked") for st in before.values()):
+            bead, prompt = None, STALL_PROMPT
+        else:
+            return  # every bead is closed
+        if sessions.remaining() <= 0:
+            return  # bd bookkeeping used the last of the time; no zero-length session
+        out.sessions += 1
+        out.stall_sessions += bead is None
+        took = sessions.run(prompt)
+        after = _bead_states(trial)
+        quick = quick + 1 if took < QUICK_SESSION_S and after == before else 0
+        retry = None
+        if bead is not None and after.get(bead) != "closed" and not sessions.killed_at_deadline:
+            failures[bead] = failures.get(bead, 0) + 1
+            if failures[bead] >= 2:
+                _bd_ok(trial, "update", bead, "--status", "blocked")
+                _bd_ok(trial, "note", bead, f"harness: not closed after {failures[bead]} bead sessions; set blocked.")
+            else:
+                retry = bead
+        if quick >= STALL_RUN:
+            out.loop_stalled = True
+            return
+
+
+def run_agent(trial: Trial, test: AcceptanceTest, opencode_argv: list[str] | None,
+              roadmap: str = "none") -> tuple[bool, RoadmapOutcome | None]:
+    """Run the trial's agent session(s) within test.time_limit_s; return (timed out, roadmap outcome).
+
+    none: one session with the brief, into transcript.jsonl (`opencode_argv` runs as given).
+    frontier/ornith: ornith first writes the roadmap; then the bead loop. Timed out means the last
+    session was killed at the deadline."""
+    if roadmap == "none":
+        argv = opencode_argv if opencode_argv is not None else opencode_command(test.prompt)
+        finished = _run_sandboxed(agent_command(trial, argv), trial.dir / "transcript.jsonl",
+                                  trial.dir / "opencode.log", test.time_limit_s)
+        return not finished, None
+    sessions = _Sessions(trial, opencode_argv, test.time_limit_s)
+    out = RoadmapOutcome()
+    try:
+        if roadmap == "ornith" and _writing_phase(trial, test, sessions) == 0:
+            out.roadmap_failed = True
+            if sessions.remaining() > 0:
+                out.sessions += 1
+                sessions.run(test.prompt)
+        else:
+            bead_loop(trial, sessions, out)
+        final = _export(trial, trial.dir / "beads-final.jsonl")
+    except RuntimeError as e:
+        out.bd_error = str(e)
+        final = []
+    out.beads = len(final)
+    out.closed = sum(b.get("status") == "closed" for b in final)
+    out.blocked = sum(b.get("status") == "blocked" for b in final)
+    return sessions.killed_at_deadline, out
+
+
+def trial_denials(trial_dir: Path) -> int:
+    """arc denials over every session's transcript."""
+    return sum(count_denials(t) for t in sorted(Path(trial_dir).glob("transcript*.jsonl")))
+
+
 def run_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors: Path | None, proxy: Path | None,
               opencode_argv: list[str] | None = None, *, test_dir: Path | None = None,
               branch: str = STITCH_BRANCH, baseline: bool = False, cli: Path | None = None,
-              arc: Path | None = None) -> TrialResult:
+              arc: Path | None = None, roadmap: str = "none") -> TrialResult:
     """Set up the trial, run the agent sandboxed until done or time_limit_s, then check it sandboxed."""
-    trial = prepare_trial(test, index_md, trial_dir, mirrors, proxy, cli, arc)
-    argv = opencode_argv if opencode_argv is not None else opencode_command(test.prompt)
-    finished = _run_sandboxed(agent_command(trial, argv), trial.dir / "transcript.jsonl",
-                              trial.dir / "opencode.log", test.time_limit_s)
+    trial = prepare_trial(test, index_md, trial_dir, mirrors, proxy, cli, arc, roadmap=roadmap)
+    timed_out, outcome = run_agent(trial, test, opencode_argv, roadmap)
     test_dir = Path(test_dir) if test_dir is not None else REPO / "tests" / "acceptance" / test.name
     result = run_checker(trial, test, test_dir, branch, baseline)
-    if not finished:
+    if timed_out:
         result.reason = "timeout"
+    if outcome is not None:
+        result.roadmap = asdict(outcome)
     if arc is not None:
-        result.arc_denials = count_denials(trial.dir / "transcript.jsonl")
+        result.arc_denials = trial_denials(trial.dir)
         result.arc_hook_live = arc_hook_live(trial.project)
     (trial.dir / "checker.json").write_text(result.to_json())
     return result
@@ -480,11 +655,21 @@ def _go_sample_dirs() -> list[Path]:
 
 def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = False, *,
               results_root: Path | None = None, opencode_argv: list[str] | None = None,
-              product: bool = False, arc: bool = False, arc_src: Path | None = None) -> RoundResult:
+              product: bool = False, arc: bool = False, arc_src: Path | None = None,
+              roadmap: str = "none") -> RoundResult:
     test_dir = Path(test_dir).resolve()
     test = load_acceptance(test_dir)
     root = Path(results_root or RESULTS).resolve()
     mirrors = proxy = cli = arc_bin = None
+    if roadmap not in ROADMAPS:
+        raise ValueError(f"--roadmap must be one of {', '.join(ROADMAPS)}")
+    if roadmap != "none":
+        if not (product and arc):
+            raise ValueError(f"--roadmap {roadmap} needs --product and --arc")
+        if roadmap == "ornith" and not test.roadmap_prompt:
+            raise ValueError(f"--roadmap ornith needs roadmap_prompt in {test_dir / 'test.yaml'}")
+        if roadmap == "frontier" and not (test_dir / "roadmaps" / "frontier.jsonl").is_file():
+            raise ValueError(f"--roadmap frontier needs {test_dir / 'roadmaps' / 'frontier.jsonl'}")
     if arc and not product:
         raise ValueError("--arc needs --product")
     if product and (baseline or test.ecosystem == "go"):
@@ -516,16 +701,24 @@ def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = F
         else:
             index_md = render_index(build_cli(root), test.ecosystem, f"dir:{mirrors}", test.modules)
 
-    out = root / test.name / ("baseline" if baseline else f"round-{round_no}")
+    out = round_dir(root, test.name, round_no, baseline, roadmap)
     out.mkdir(parents=True, exist_ok=True)
-    result = RoundResult(test.name, round_no, product=product, arc=arc)
+    result = RoundResult(test.name, round_no, product=product, arc=arc, roadmap=roadmap)
     for k in range(1, trials + 1):
         tr = run_trial(test, index_md, out / f"trial-{k}", mirrors, proxy, opencode_argv,
-                       test_dir=test_dir, branch=branch, baseline=baseline, cli=cli, arc=arc_bin)
+                       test_dir=test_dir, branch=branch, baseline=baseline, cli=cli, arc=arc_bin,
+                       roadmap=roadmap)
         result.results.append(tr)
         (out / "round.json").write_text(result.to_json())
     (out / "round.json").write_text(result.to_json())
     return result
+
+
+def round_dir(root: Path, test: str, round_no: int, baseline: bool, roadmap: str = "none") -> Path:
+    """round-<N> for none (as before), round-<N>-<roadmap> for the bead conditions."""
+    if baseline:
+        return Path(root) / test / "baseline"
+    return Path(root) / test / (f"round-{round_no}" if roadmap == "none" else f"round-{round_no}-{roadmap}")
 
 
 def refresh_mirrors(root: Path | None = None) -> list[Path]:

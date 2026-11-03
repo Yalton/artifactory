@@ -462,3 +462,235 @@ def test_host_side_bd_call_stays_inside_its_home(tmp_path):
 def test_prepare_trial_none_roadmap_has_no_bd(tmp_path):
     trial = prepare_trial(GO_TEST, "# index", tmp_path / "trial-1", None, None)
     assert not (trial.bin / "bd").exists() and "DO_NOT_TRACK" not in trial.env
+
+
+def test_bd_run_refuses_env_without_home(tmp_path):
+    with pytest.raises(ValueError, match="HOME"):
+        harness.bd_run(tmp_path, {"DO_NOT_TRACK": "1", "BEADS_ACTOR": "test"}, "list")
+
+
+def test_bd_binary_reads_only_the_magic(monkeypatch, tmp_path):
+    fake = tmp_path / "pkg" / "bd"
+    fake.parent.mkdir()
+    fake.write_bytes(b"\x7fELF" + b"\0" * 64)
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake.parent))
+    monkeypatch.setattr(Path, "read_bytes", lambda self: pytest.fail("bd_binary read the whole file"))
+    assert harness.bd_binary() == fake.resolve()
+
+
+# --- roadmap conditions and the bead loop -----------------------------------
+
+# A fake agent: the prompt arrives as $1. Bead sessions append the bead id to order.txt and run
+# the script under `on_bead` with $id set; stall sessions run `on_stall`; any other prompt `on_other`.
+def bead_agent(on_bead="bd close $id >/dev/null", on_stall="", on_other="") -> list[str]:
+    script = ('case "$1" in\n'
+              '"Work bead "*) id=$(echo "$1" | cut -d" " -f3); id=${id%.}; echo "$id" >> order.txt\n'
+              f'{on_bead}\n;;\n'
+              f'"Some beads are unfinished."*)\necho stall >> order.txt\n{on_stall}\n;;\n'
+              f'*)\n{on_other}\n;;\nesac\n')
+    return ["/bin/sh", "-c", script, "sh"]
+
+
+@pytest.fixture(scope="module")
+def bd_template(tmp_path_factory):
+    """One ornith trial with bd initialised (bd init takes ~15 s); tests run on copies of it."""
+    if not harness.BD_FALLBACK.is_file() and shutil.which("bd") is None:
+        pytest.skip("bd is not installed")
+    return prepare_trial(LANTERN, "", tmp_path_factory.mktemp("bdtpl") / "trial-1", None, None, roadmap="ornith")
+
+
+def clone_trial(t: harness.Trial, dest: Path) -> harness.Trial:
+    shutil.copytree(t.dir, dest, symlinks=True)
+    old, new = str(t.dir), str(dest)
+    move = lambda p: Path(str(p).replace(old, new))  # noqa: E731
+    return harness.Trial(dest, move(t.project), move(t.home), move(t.bin), None, None,
+                         {k: v.replace(old, new) for k, v in t.env.items()}, [move(p) for p in t.ro_binds])
+
+
+def bd(trial, *args) -> str:
+    r = harness.bd_run(trial.project, trial.env, *args)
+    assert r.returncode == 0, r.stderr
+    return r.stdout.strip()
+
+
+def new_bead(trial, title, after=None, priority=2) -> str:
+    bid = bd(trial, "q", title, "-p", str(priority))
+    if after:
+        bd(trial, "dep", "add", bid, after)
+    return bid
+
+
+def states(trial) -> dict:
+    return {x["id"]: x["status"] for x in json.loads(bd(trial, "list", "--all", "--limit", "0", "--json"))}
+
+
+def order(trial) -> list[str]:
+    f = trial.project / "order.txt"
+    return f.read_text().split() if f.exists() else []
+
+
+def run(trial, agent, limit, roadmap="frontier", test=LANTERN):
+    test = dataclasses.replace(test, time_limit_s=limit)
+    start = time.monotonic()
+    timed_out, outcome = harness.run_agent(trial, test, agent, roadmap)
+    return timed_out, outcome, time.monotonic() - start
+
+
+@pytest.fixture
+def bead_trial(bd_template, tmp_path):
+    return clone_trial(bd_template, tmp_path / "trial-1")
+
+
+def test_bead_loop_follows_dependencies_and_stops_when_all_closed(bead_trial):
+    t = bead_trial
+    c = new_bead(t, "third")
+    a = new_bead(t, "first")
+    b = new_bead(t, "second", after=a)
+    bd(t, "dep", "add", c, b)
+    timed_out, out, _ = run(t, bead_agent(), 120)
+    assert order(t) == [a, b, c]
+    assert not timed_out
+    assert set(states(t).values()) == {"closed"}
+    assert (out.beads, out.closed, out.blocked, out.sessions, out.stall_sessions) == (3, 3, 0, 3, 0)
+    assert not out.loop_stalled and not out.roadmap_failed
+    assert sorted(p.name for p in t.dir.glob("transcript*")) == [f"transcript-{n}.jsonl" for n in (1, 2, 3)]
+    final = [json.loads(line) for line in (t.dir / "beads-final.jsonl").read_text().splitlines()]
+    assert {x["status"] for x in final} == {"closed"}
+
+
+def test_unclosed_bead_is_retried_once_then_blocked_with_a_note(bead_trial, monkeypatch):
+    monkeypatch.setattr(harness, "QUICK_SESSION_S", 0)  # these quick sessions are not a dead server
+    t = bead_trial
+    a = new_bead(t, "stubborn", priority=1)
+    b = new_bead(t, "easy", priority=2)
+    # The stubborn bead is claimed and left in progress; it must be reset and retried, then blocked.
+    agent = bead_agent(on_bead=f'if [ "$id" = {a} ]; then bd update $id --claim >/dev/null; else bd close $id >/dev/null; fi',
+                       on_stall=f"bd show {a} --json > stall-saw.json; bd close {a} >/dev/null")
+    timed_out, out, _ = run(t, agent, 120)
+    assert order(t) == [a, a, b, "stall"]
+    saw = json.loads((t.project / "stall-saw.json").read_text())[0]
+    assert saw["status"] == "blocked" and "not closed" in saw["notes"]
+    assert (out.sessions, out.stall_sessions, out.closed) == (4, 1, 2) and not timed_out
+
+
+def test_only_blocked_beads_left_runs_stall_sessions_until_time_is_up(bead_trial, monkeypatch):
+    monkeypatch.setattr(harness, "QUICK_SESSION_S", 0.5)
+    t = bead_trial
+    a = new_bead(t, "stuck")
+    bd(t, "update", a, "--status", "blocked")
+    timed_out, out, elapsed = run(t, bead_agent(on_stall="sleep 1"), 10)
+    assert out.stall_sessions >= 2 and out.sessions == out.stall_sessions
+    assert not out.loop_stalled
+    assert set(order(t)) == {"stall"}
+    assert elapsed >= 10 - 1  # the loop used the time, it did not stop early
+
+
+def test_stall_session_closing_a_blocker_returns_to_the_ready_loop(bead_trial):
+    t = bead_trial
+    a = new_bead(t, "blocker")
+    b = new_bead(t, "after", after=a)
+    bd(t, "update", a, "--status", "blocked")
+    timed_out, out, _ = run(t, bead_agent(on_stall=f"bd close {a} >/dev/null"), 120)
+    assert order(t) == ["stall", b]
+    assert set(states(t).values()) == {"closed"} and not timed_out
+    assert (out.sessions, out.stall_sessions, out.closed) == (2, 1, 2)
+
+
+def test_bead_loop_never_exceeds_the_time_limit_and_reports_timeout(bead_trial):
+    t = bead_trial
+    new_bead(t, "slow")
+    timed_out, out, elapsed = run(t, bead_agent(on_bead="sleep 600"), 4)
+    assert timed_out and out.sessions == 1
+    assert elapsed < 4 + 8  # the session limit is the time left; only bd bookkeeping follows it
+    assert out.blocked == 0  # a bead killed at the deadline is not counted as a failure
+
+
+def test_no_timeout_when_the_last_session_finished_in_time(bead_trial, monkeypatch):
+    monkeypatch.setattr(harness, "QUICK_SESSION_S", 0)
+    t = bead_trial
+    new_bead(t, "done")
+    timed_out, out, _ = run(t, bead_agent(), 60)
+    assert not timed_out and out.closed == 1
+
+
+def test_instant_exit_agent_sets_loop_stalled(bead_trial):
+    t = bead_trial
+    for k in range(3):
+        new_bead(t, f"b{k}")
+    timed_out, out, elapsed = run(t, bead_agent(on_bead=":"), 300)
+    assert out.loop_stalled and not timed_out
+    assert out.sessions == 3 and elapsed < 120
+
+
+def test_ornith_writing_phase_writes_beads_then_builds(bead_trial):
+    t = bead_trial
+    writer = 'grep -q "Lantern" BRIEF.md && a=$(bd q first) && b=$(bd q second) && bd dep add $b $a >/dev/null'
+    timed_out, out, _ = run(t, bead_agent(on_other=writer), 120, roadmap="ornith")
+    assert not timed_out and not out.roadmap_failed
+    assert (out.beads, out.closed, out.sessions) == (2, 2, 2)
+    assert len((t.dir / "roadmap.jsonl").read_text().splitlines()) == 2
+    assert (t.dir / "transcript-1.jsonl").exists() and (t.dir / "transcript-3.jsonl").exists()
+    assert not (t.project / "BRIEF.md").exists()  # bead sessions never see the brief
+    assert git("status", "--porcelain", cwd=t.project).strip() in ("", "?? order.txt")
+
+
+def test_ornith_with_no_beads_falls_back_to_one_brief_session(bead_trial):
+    t = bead_trial
+    agent = bead_agent(on_other='case "$1" in *"Lantern"*) echo brief >> order.txt;; *) echo writer >> order.txt;; esac')
+    timed_out, out, _ = run(t, agent, 120, roadmap="ornith")
+    assert out.roadmap_failed and out.beads == 0 and out.sessions == 1
+    assert order(t) == ["writer", "brief"]
+    assert (t.dir / "roadmap.jsonl").read_text() == ""
+
+
+def test_writing_phase_is_capped(bead_trial, monkeypatch):
+    monkeypatch.setattr(harness, "WRITING_LIMIT_S", 2)
+    t = bead_trial
+    timed_out, out, elapsed = run(t, bead_agent(on_other='case "$1" in *"Lantern"*) ;; *) sleep 600;; esac'), 60,
+                                  roadmap="ornith")
+    assert out.roadmap_failed and not timed_out  # the writer was cut at its cap, not at the deadline
+    assert elapsed < 30
+
+
+def test_none_mode_runs_one_session_into_transcript_jsonl(tmp_path):
+    trial = prepare_trial(GO_TEST, "# index", tmp_path / "trial-1", None, None)
+    timed_out, outcome = harness.run_agent(trial, GO_TEST, fake_agent("echo '{}'; touch ran"), "none")
+    assert not timed_out and outcome is None
+    assert (trial.project / "ran").exists()
+    assert [p.name for p in trial.dir.glob("transcript*")] == ["transcript.jsonl"]
+    assert (trial.dir / "opencode.log").exists()
+
+
+def test_trial_json_records_roadmap_only_when_set():
+    assert "roadmap" not in json.loads(TrialResult("t", "trial-1").to_json())
+    r = TrialResult("t", "trial-1", roadmap={"beads": 2, "loop_stalled": False})
+    assert json.loads(r.to_json())["roadmap"] == {"beads": 2, "loop_stalled": False}
+
+
+def test_arc_denials_sum_over_all_transcripts(tmp_path):
+    for n in (1, 2):
+        (tmp_path / f"transcript-{n}.jsonl").write_text(f"x {harness.DENIAL_MARK}\n")
+    assert harness.trial_denials(tmp_path) == 2
+
+
+def test_round_roadmap_needs_product_and_arc(tmp_path):
+    lantern = ROOT / "tests" / "acceptance" / "godot-lantern-keep"
+    for kw in ({}, {"product": True}):
+        with pytest.raises(ValueError, match="--product and --arc"):
+            harness.run_round(lantern, 1, roadmap="ornith", results_root=tmp_path, **kw)
+    with pytest.raises(ValueError, match="roadmap"):
+        harness.run_round(lantern, 1, roadmap="bogus", results_root=tmp_path)
+
+
+def test_round_dir_and_json_carry_roadmap(tmp_path):
+    assert harness.round_dir(tmp_path, "t", 3, False, "none") == tmp_path / "t" / "round-3"
+    assert harness.round_dir(tmp_path, "t", 3, False, "ornith") == tmp_path / "t" / "round-3-ornith"
+    assert json.loads(RoundResult("t", 1, roadmap="frontier").to_json())["roadmap"] == "frontier"
+    assert json.loads(RoundResult("t", 1).to_json())["roadmap"] == "none"
+
+
+def test_cli_round_roadmap_choices():
+    from artifactory.cli import main
+    with pytest.raises(SystemExit):
+        main(["round", "x", "--roadmap", "bogus"])
