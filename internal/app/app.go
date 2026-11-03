@@ -170,8 +170,11 @@ func resolveArc(dir, mode string) (bool, string, error) {
 	case ArcOff:
 		return false, "", nil
 	case ArcOn:
-		if present, _ := arcreg.Detect(dir); !present {
-			return false, "", usageErr(errors.New("--arc on: " + arcreg.RegistryPath + " and a working `arc module list --json` are required"))
+		if present, warn := arcreg.Detect(dir); !present {
+			if warn == "" {
+				warn = "no " + arcreg.RegistryPath
+			}
+			return false, "", usageErr(errors.New("--arc on: " + arcreg.RegistryPath + " and a working `arc module list --json` are required: " + warn))
 		}
 		return true, "", nil
 	}

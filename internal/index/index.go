@@ -43,7 +43,7 @@ func Render(eco string, mods []descriptor.Descriptor, opt Options) string {
 			parts = append(parts, "- "+r)
 		}
 		if opt.CLIInstall {
-			parts = append(parts, "", "```", "artifactory install "+d.Name, "```", "", "(runs: "+d.Install+")", "")
+			parts = append(parts, "", "```", "artifactory install "+d.Name, "```", "", "(artifactory runs this for you; do not run it yourself: "+d.Install+")", "")
 		} else {
 			parts = append(parts, "", "```", d.Install, "```", "")
 		}

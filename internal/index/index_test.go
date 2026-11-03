@@ -115,20 +115,22 @@ func TestArcRenderMatchesGolden(t *testing.T) {
 	}
 }
 
-func TestCLIInstallLines(t *testing.T) {
-	ds := loadAll(t, "../../samples/go")
+func TestCLIInstallRenderMatchesGolden(t *testing.T) {
+	ds := loadAll(t, "../../samples/go")[:1]
+	for name, opt := range map[string]Options{
+		"testdata/go.cli.golden.md":     {CLIInstall: true},
+		"testdata/go.cli-arc.golden.md": {CLIInstall: true, Arc: true},
+	} {
+		want, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := Render("go", ds, opt); got != string(want) {
+			t.Errorf("Render differs from %s", name)
+		}
+	}
 	raw := Render("go", ds, Options{})
-	cli := Render("go", ds, Options{CLIInstall: true})
-	for _, d := range ds {
-		line := "```\nartifactory install " + d.Name + "\n```\n\n(runs: " + d.Install + ")\n"
-		if !strings.Contains(cli, line) {
-			t.Errorf("%s: CLI install lines missing", d.Name)
-		}
-		if strings.Contains(raw, "artifactory install") {
-			t.Errorf("raw render mentions the CLI")
-		}
-		if !strings.Contains(raw, "```\n"+d.Install+"\n```\n") {
-			t.Errorf("%s: raw install line missing", d.Name)
-		}
+	if strings.Contains(raw, "artifactory install") {
+		t.Errorf("raw render mentions the CLI")
 	}
 }

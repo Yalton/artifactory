@@ -168,7 +168,7 @@ func readFile(t *testing.T, path string) string {
 func TestFullIndexUsesCLIInstallLines(t *testing.T) {
 	dir := indexProject(t)
 	md := readFile(t, filepath.Join(dir, "MODULES.md"))
-	if !strings.Contains(md, "```\nartifactory install CrashKit\n```\n\n(runs: ") {
+	if !strings.Contains(md, "```\nartifactory install CrashKit\n```\n\n(artifactory runs this for you; do not run it yourself: ") {
 		t.Errorf("full index lacks CLI install line:\n%s", md)
 	}
 	if code, _, _ := runCmd("index", "--project", dir, "--modules-only"); code != 0 {
@@ -216,7 +216,7 @@ func TestIndexArcOnWithoutArcExits2(t *testing.T) {
 	dir := indexProject(t)
 	t.Setenv("PATH", t.TempDir())
 	code, _, se := runCmd("index", "--project", dir, "--arc", "on")
-	if code != 2 || !strings.Contains(se, "--arc on") {
+	if code != 2 || !strings.Contains(se, "--arc on") || !strings.Contains(se, "no .arch/registry.yaml") {
 		t.Errorf("code=%d stderr=%q", code, se)
 	}
 	if code, _, _ := runCmd("index", "--project", dir, "--arc", "bogus"); code != 2 {
