@@ -142,12 +142,12 @@ public partial class MoveCheck : Node
         return boxes;
     }
 
-    private static bool Hit(List<Aabb> boxes, Vector3 from, Vector3 to)
+    private static bool Hit(List<Aabb> boxes, Vector3 start, Vector3 to)
     {
         foreach (Aabb b in boxes)
         {
-            if (b.HasPoint(from)) return true;
-            if (b.IntersectsSegment(from, to)) return true;
+            if (b.HasPoint(start)) return true;
+            if (b.IntersectsSegment(start, to)) return true;
         }
         return false;
     }
@@ -208,7 +208,6 @@ public partial class MoveCheck : Node
         {
             if (!b.HasPoint(eye)) walls.Add(b);
         }
-        var space = GetViewport().World3D.DirectSpaceState;
         bool framed = false;
         foreach (GeometryInstance3D g in meshes)
         {
@@ -222,6 +221,7 @@ public partial class MoveCheck : Node
                 framed = true;
                 var ray = PhysicsRayQueryParameters3D.Create(eye, c);
                 ray.Exclude = own;
+                var space = GetViewport().World3D.DirectSpaceState;
                 bool solid = space.IntersectRay(ray).Count != 0;
                 if (!solid && !Hit(walls, eye, c)) return "";
             }
