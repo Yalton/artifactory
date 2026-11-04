@@ -24,8 +24,9 @@ Two acceptance tests, 5 trials per round, pass bar 4 of 5. Time limit per trial:
 | 6 | (5/5 stands) | 5/5 by checker, 3/5 by screenshot | `player_visible` counts first person, needs a drawn mesh, tests a 16:9 frustum; MoveCheck reports the reason |
 | 7 | (5/5 stands) | 2/5 (checker and screenshot agree) | Drawn walls block sight; `room_present` requires a floor and walls; the harness resumes after a dropped model connection |
 | 8 | (5/5 stands) | 2/5 (checker and screenshot agree) | Product CLI in the trial: `artifactory.yaml`, `artifactory install`, product MODULES.md (arc off) |
+| 9 | (5/5 stands) | 2/5 (checker and screenshot agree; 2 infrastructure losses re-run) | Round 8 plus arc (registry, hook, gate): 0 denials, gate clean in all 5 |
 
-Per-round analyses: `results/godot-capsule-room/baseline/REPORT.md`, `results/round-{1..8}/REPORT.md`.
+Per-round analyses: `results/godot-capsule-room/baseline/REPORT.md`, `results/round-{1..9}/REPORT.md`.
 
 ## Verdict
 
