@@ -14,6 +14,7 @@ Also print a line from each of your own scripts' `_Ready` (for example `GD.Print
 Then check movement, the camera and the room. Copy this to `MoveCheck.cs` in the project root. It does nothing unless run with `--move-check`:
 
 ```csharp
+using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using Godot;
@@ -21,7 +22,8 @@ using Godot;
 // Self-check autoload: inert unless run with `-- --move-check`.
 public partial class MoveCheck : Node
 {
-    private ulong _t0; private int _stage;
+    private ulong _t0;
+    private int _stage;
     private Node3D _p;
     private Vector3 _a, _b, _c;
     private string _why = "";
@@ -30,51 +32,163 @@ public partial class MoveCheck : Node
 
     public override void _Ready()
     {
-        if (!OS.GetCmdlineUserArgs().Contains("--move-check")) { SetProcess(false); return; }
+        if (!OS.GetCmdlineUserArgs().Contains("--move-check"))
+        {
+            SetProcess(false);
+            return;
+        }
         _t0 = Time.GetTicksMsec();
     }
 
     public override void _Process(double delta)
     {
         double t = (Time.GetTicksMsec() - _t0) / 1000.0;
-        if (_stage == 0 && t >= 1)
+        if (_stage == 0 && t >= 1) Start();
+        else if (_stage == 1 && t >= 2) Sideways();
+        else if (_stage == 2 && t >= 3) Finish();
+    }
+
+    private Vector3 PlayerPos()
+    {
+        if (_p == null) return default;
+        return _p.GlobalPosition;
+    }
+
+    private void Start()
+    {
+        var found = new List<Node3D>();
+        foreach (Node n in GetTree().GetNodesInGroup("player"))
         {
-            var n = GetTree().GetNodesInGroup("player").OfType<Node3D>().ToList();
-            if (n.Count == 1) _p = n[0]; else _why = $"{n.Count} Node3D in group player (need exactly 1)";
-            _a = _p?.GlobalPosition ?? default; _view0 = Unseen(); _room = RoomMissing(); Press(Key.W, true); _stage = 1;
+            if (n is Node3D n3) found.Add(n3);
         }
-        else if (_stage == 1 && t >= 2) { Press(Key.W, false); _b = _p?.GlobalPosition ?? default; Press(Key.D, true); _stage = 2; }
-        else if (_stage == 2 && t >= 3)
+        if (found.Count == 1) _p = found[0];
+        else _why = $"{found.Count} Node3D in group player (need exactly 1)";
+        _a = PlayerPos();
+        _view0 = Unseen();
+        _room = RoomMissing();
+        Press(Key.W, true);
+        _stage = 1;
+    }
+
+    private void Sideways()
+    {
+        Press(Key.W, false);
+        _b = PlayerPos();
+        Press(Key.D, true);
+        _stage = 2;
+    }
+
+    private static bool Moved(Vector3 v)
+    {
+        float len = v.Length();
+        return len >= 0.5f && len <= 20f;
+    }
+
+    private void Finish()
+    {
+        Press(Key.D, false);
+        _c = PlayerPos();
+        _stage = 3;
+        Vector3 w = Flat(_b - _a);
+        Vector3 d = Flat(_c - _b);
+        Vector3 dw = w.Normalized();
+        Vector3 dd = d.Normalized();
+        bool ok = _p != null && Moved(w) && Moved(d);
+        ok = ok && dw.Z < -0.7f && dd.X > 0.7f;
+        string view1 = Unseen();
+        string view = _view0 != "" ? _view0 : view1;
+        bool seen = view == "";
+        bool room = _room == "";
+        if (_why != "") GD.PrintErr("MOVECHECK FAIL: " + _why);
+        bool all = ok && seen && room;
+        string okText = all.ToString().ToLower();
+        string seenText = seen ? "true" : view;
+        string roomText = room ? "true" : "missing:" + _room;
+        string head = $"MOVECHECK ok={okText} camera_sees_player={seenText} room={roomText}";
+        GD.Print(head + $" w={F(w.Length())} d={F(d.Length())} dir_w={dw} dir_d={dd}");
+        GetTree().Quit(all ? 0 : 1);
+    }
+
+    // False for a mesh with nothing to draw.
+    private static bool Drawn(GeometryInstance3D g)
+    {
+        if (g is not MeshInstance3D mi) return true;
+        if (mi.Mesh == null) return false;
+        Rid r = mi.Mesh.GetRid();
+        if (!r.IsValid) return false;
+        return RenderingServer.MeshGetSurfaceCount(r) > 0;
+    }
+
+    private static List<GeometryInstance3D> DrawnIn(Node root)
+    {
+        var list = new List<GeometryInstance3D>();
+        foreach (Node n in root.FindChildren("*", "GeometryInstance3D", true, false))
         {
-            Press(Key.D, false); _c = _p?.GlobalPosition ?? default; _stage = 3;
-            Vector3 w = Flat(_b - _a), d = Flat(_c - _b);
-            Vector3 dw = w.Normalized(), dd = d.Normalized();
-            bool ok = _p != null && w.Length() is >= 0.5f and <= 20f && d.Length() is >= 0.5f and <= 20f && dw.Z < -0.7f && dd.X > 0.7f;
-            string view1 = Unseen(), view = _view0 != "" ? _view0 : view1;
-            bool seen = view == "", room = _room == "";
-            if (_why != "") GD.PrintErr("MOVECHECK FAIL: " + _why);
-            GD.Print($"MOVECHECK ok={(ok && seen && room).ToString().ToLower()} camera_sees_player={(seen ? "true" : view)} room={(room ? "true" : "missing:" + _room)} w={F(w.Length())} d={F(d.Length())} dir_w={dw} dir_d={dd}");
-            GetTree().Quit(ok && seen && room ? 0 : 1);
+            if (n is not GeometryInstance3D g) continue;
+            if (g.IsVisibleInTree() && Drawn(g)) list.Add(g);
         }
+        return list;
     }
 
     // World boxes of every drawn mesh that is not part of the player.
-    private System.Collections.Generic.List<Aabb> Boxes() =>
-        GetTree().Root.FindChildren("*", "GeometryInstance3D", true, false).OfType<GeometryInstance3D>()
-            .Where(g => g.IsVisibleInTree() && Drawn(g) && g != _p && !_p.IsAncestorOf(g))
-            .Select(g => g.GlobalTransform * g.GetAabb()).ToList();
+    private List<Aabb> Boxes()
+    {
+        var boxes = new List<Aabb>();
+        foreach (GeometryInstance3D g in DrawnIn(GetTree().Root))
+        {
+            if (g == _p || _p.IsAncestorOf(g)) continue;
+            boxes.Add(g.GlobalTransform * g.GetAabb());
+        }
+        return boxes;
+    }
 
-    private static bool Drawn(GeometryInstance3D g) => g is not MeshInstance3D mi
-        || (mi.Mesh?.GetRid() is Rid r && r.IsValid && RenderingServer.MeshGetSurfaceCount(r) > 0);
+    private static bool Hit(List<Aabb> boxes, Vector3 from, Vector3 to)
+    {
+        foreach (Aabb b in boxes)
+        {
+            if (b.HasPoint(from)) return true;
+            if (b.IntersectsSegment(from, to)) return true;
+        }
+        return false;
+    }
 
     // Directions from the player with no drawn geometry: a floor below, a wall on each side.
     private string RoomMissing()
     {
         if (_p == null) return "no_player";
-        Vector3 o = _p.GlobalPosition; var boxes = Boxes();
-        var dirs = new (string, Vector3)[] { ("down", Vector3.Down * 10), ("+x", Vector3.Right * 100),
-            ("-x", Vector3.Left * 100), ("+z", Vector3.Back * 100), ("-z", Vector3.Forward * 100) };
-        return string.Join(",", dirs.Where(d => !boxes.Any(b => b.HasPoint(o) || b.IntersectsSegment(o, o + d.Item2))).Select(d => d.Item1));
+        Vector3 o = _p.GlobalPosition;
+        List<Aabb> boxes = Boxes();
+        var names = new[] { "down", "+x", "-x", "+z", "-z" };
+        var rays = new[] { Vector3.Down * 10, Vector3.Right * 100, Vector3.Left * 100,
+            Vector3.Back * 100, Vector3.Forward * 100 };
+        var missing = new List<string>();
+        for (int i = 0; i < names.Length; i++)
+        {
+            if (!Hit(boxes, o, o + rays[i])) missing.Add(names[i]);
+        }
+        return string.Join(",", missing);
+    }
+
+    private Godot.Collections.Array<Rid> OwnBodies()
+    {
+        var own = new Godot.Collections.Array<Rid>();
+        foreach (Node n in _p.FindChildren("*", "CollisionObject3D", true, false))
+        {
+            if (n is CollisionObject3D b) own.Add(b.GetRid());
+        }
+        if (_p is CollisionObject3D self) own.Add(self.GetRid());
+        return own;
+    }
+
+    // Is the point c (world space) inside the camera's 16:9 frame?
+    private static bool InFrame(Camera3D cam, Vector3 c)
+    {
+        Vector3 l = cam.GlobalTransform.AffineInverse() * c;
+        // Headless viewports are 64x64, so frame at 16:9 by hand.
+        float half = -l.Z * Mathf.Tan(Mathf.DegToRad(cam.Fov / 2f));
+        if (-l.Z < cam.Near) return false;
+        if (Mathf.Abs(l.Y) > half) return false;
+        return Mathf.Abs(l.X) <= half * 16f / 9f;
     }
 
     // "" when the current camera sees a drawn mesh of the player at 16:9, else why not.
@@ -83,26 +197,33 @@ public partial class MoveCheck : Node
         Camera3D cam = GetViewport().GetCamera3D();
         if (_p == null) return "no_player";
         if (cam == null) return "no_camera";
-        if (_p.IsAncestorOf(cam) && cam.GlobalPosition.DistanceTo(_p.GlobalPosition) <= 2f) return ""; // first person
-        var meshes = _p.FindChildren("*", "GeometryInstance3D", true, false).OfType<GeometryInstance3D>()
-            .Where(g => g.IsVisibleInTree() && Drawn(g)).ToList();
+        Vector3 eye = cam.GlobalPosition;
+        // A camera parented to the player within 2 units is first person.
+        if (_p.IsAncestorOf(cam) && eye.DistanceTo(_p.GlobalPosition) <= 2f) return "";
+        List<GeometryInstance3D> meshes = DrawnIn(_p);
         if (meshes.Count == 0) return "no_drawn_mesh";
-        var own = new Godot.Collections.Array<Rid>(_p.FindChildren("*", "CollisionObject3D", true, false)
-            .OfType<CollisionObject3D>().Append(_p as CollisionObject3D).Where(b => b != null).Select(b => b.GetRid()));
-        var walls = Boxes().Where(b => !b.HasPoint(cam.GlobalPosition)).ToList();
-        bool framed = false;
-        foreach (var g in meshes)
+        Godot.Collections.Array<Rid> own = OwnBodies();
+        var walls = new List<Aabb>();
+        foreach (Aabb b in Boxes())
         {
-            Aabb box = g.GetAabb(); Vector3 mid = box.GetCenter();
-            foreach (Vector3 p in new[] { mid, mid with { Y = box.Position.Y + box.Size.Y * 0.9f } }) // centre and top
+            if (!b.HasPoint(eye)) walls.Add(b);
+        }
+        var space = GetViewport().World3D.DirectSpaceState;
+        bool framed = false;
+        foreach (GeometryInstance3D g in meshes)
+        {
+            Aabb box = g.GetAabb();
+            Vector3 mid = box.GetCenter();
+            Vector3 top = mid with { Y = box.Position.Y + box.Size.Y * 0.9f };
+            foreach (Vector3 p in new[] { mid, top }) // centre and top
             {
-                Vector3 c = g.GlobalTransform * p, l = cam.GlobalTransform.AffineInverse() * c;
-                float half = -l.Z * Mathf.Tan(Mathf.DegToRad(cam.Fov / 2f)); // headless viewports are 64x64, so frame at 16:9 by hand
-                if (-l.Z < cam.Near || Mathf.Abs(l.Y) > half || Mathf.Abs(l.X) > half * 16f / 9f) continue;
+                Vector3 c = g.GlobalTransform * p;
+                if (!InFrame(cam, c)) continue;
                 framed = true;
-                var ray = PhysicsRayQueryParameters3D.Create(cam.GlobalPosition, c); ray.Exclude = own;
-                if (GetViewport().World3D.DirectSpaceState.IntersectRay(ray).Count == 0
-                    && !walls.Any(b => b.IntersectsSegment(cam.GlobalPosition, c))) return "";
+                var ray = PhysicsRayQueryParameters3D.Create(eye, c);
+                ray.Exclude = own;
+                bool solid = space.IntersectRay(ray).Count != 0;
+                if (!solid && !Hit(walls, eye, c)) return "";
             }
         }
         return framed ? "blocked" : "out_of_frame";
@@ -110,8 +231,12 @@ public partial class MoveCheck : Node
 
     private static Vector3 Flat(Vector3 v) => new(v.X, 0, v.Z);
     private static string F(float f) => f.ToString("0.##", CultureInfo.InvariantCulture);
-    private static void Press(Key k, bool down) =>
-        Input.ParseInputEvent(new InputEventKey { Keycode = k, PhysicalKeycode = k, Pressed = down });
+
+    private static void Press(Key k, bool down)
+    {
+        var e = new InputEventKey { Keycode = k, PhysicalKeycode = k, Pressed = down };
+        Input.ParseInputEvent(e);
+    }
 }
 ```
 
