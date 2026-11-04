@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -605,3 +606,18 @@ def test_lantern_dialogue_canvas_layer_counts_its_children(tmp_path):
     (tmp_path / "mirrors").mkdir()
     result = check_godot(project, lantern_test(), tmp_path / "mirrors", BRANCH)
     assert failing(result) == set(), result.to_json()
+
+
+# --- MoveCheck.cs in the consumer notes must compile -------------------------
+
+@pytest.mark.godot
+@pytest.mark.skipif(not shutil.which("dotnet"), reason="needs dotnet on PATH")
+def test_movecheck_block_compiles(tmp_path):
+    notes = (ROOT / "standard" / "consumer" / "godot-csharp.md").read_text()
+    blocks = re.findall(r"```csharp\n(.*?)```", notes, re.S)
+    code = next(b for b in blocks if "partial class MoveCheck" in b)
+    project = tmp_path / "project"
+    shutil.copytree(BLANK, project)
+    (project / "MoveCheck.cs").write_text(code)
+    result = subprocess.run(["dotnet", "build"], cwd=project, capture_output=True, text=True, timeout=300)
+    assert result.returncode == 0, result.stdout + result.stderr
