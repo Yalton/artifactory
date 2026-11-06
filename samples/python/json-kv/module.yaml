@@ -1,0 +1,19 @@
+name: json-kv
+ecosystem: python
+version: 0.1.0
+summary: Persistent key-value store in one JSON file, with atomic writes, safe across threads.
+replaces:
+  - storing key-value data in a JSON file
+  - a lock-guarded dict saved to disk
+  - atomic file rewrite on every write
+install: pip install "json-kv @ git+ssh://git@repo.billbert.co/artifactory/json-kv.git@v0.1.0"
+setup: []
+entry:
+  - json_kv.open
+  - Store.get
+  - Store.put_if_absent
+  - Store.put
+liveness: "[json-kv] live"
+docs: README.md
+example: example/main.py
+test: pytest

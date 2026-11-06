@@ -95,9 +95,13 @@ func TestValidateDescriptorProblemsShortCircuit(t *testing.T) {
 }
 
 func TestValidateRealSamples(t *testing.T) {
-	dirs, err := filepath.Glob("../../samples/go/*")
-	if err != nil || len(dirs) == 0 {
-		t.Fatalf("no samples found: %v", err)
+	var dirs []string
+	for _, eco := range []string{"go", "python"} {
+		found, err := filepath.Glob("../../samples/" + eco + "/*")
+		if err != nil || len(found) == 0 {
+			t.Fatalf("no %s samples found: %v", eco, err)
+		}
+		dirs = append(dirs, found...)
 	}
 	for _, d := range dirs {
 		t.Run(filepath.Base(d), func(t *testing.T) {

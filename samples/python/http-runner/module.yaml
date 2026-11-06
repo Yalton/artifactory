@@ -1,0 +1,16 @@
+name: http-runner
+ecosystem: python
+version: 0.1.0
+summary: Serve an http.server handler with GET /healthz and graceful shutdown on SIGINT or SIGTERM.
+replaces:
+  - HTTPServer or ThreadingHTTPServer setup and serve_forever
+  - graceful shutdown on SIGINT and SIGTERM
+  - a /healthz endpoint
+install: pip install "http-runner @ git+ssh://git@repo.billbert.co/artifactory/http-runner.git@v0.1.0"
+setup: []
+entry:
+  - http_runner.run
+liveness: "[http-runner] live"
+docs: README.md
+example: example/main.py
+test: pytest
