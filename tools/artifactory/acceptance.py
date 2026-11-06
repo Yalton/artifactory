@@ -19,6 +19,8 @@ class AcceptanceTest:
     roadmap_prompt: str | None = None
     probe: str | None = None
     python_wheels: tuple[str, ...] = ()  # requirement specs put in the trial's wheel index (Python tests)
+    python_app: str | None = None  # module the checker runs as `python -m <app>` (Python tests)
+    app_port: int = 8080  # port the app serves /healthz on (Python tests; the checker also sets PORT)
     dir: Path = Path(".")
 
 
@@ -37,5 +39,7 @@ def load_acceptance(dir: Path) -> AcceptanceTest:
         roadmap_prompt=(dir / cfg["roadmap_prompt"]).read_text() if cfg.get("roadmap_prompt") else None,
         probe=cfg.get("probe"),
         python_wheels=tuple(str(x) for x in cfg.get("python_wheels") or ()),
+        python_app=cfg.get("python_app"),
+        app_port=int(cfg.get("app_port", 8080)),
         dir=dir,
     )
