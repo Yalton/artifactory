@@ -32,7 +32,7 @@ import sys
 import tempfile
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 import yaml
@@ -102,6 +102,7 @@ class RoundResult:
     product: bool = False
     arc: bool = False
     roadmap: str = "none"
+    time_limit_s: int | None = None
 
     @property
     def passes(self) -> int:
@@ -122,6 +123,7 @@ class RoundResult:
             "product": self.product,
             "arc": self.arc,
             "roadmap": self.roadmap,
+            "time_limit_s": self.time_limit_s,
             "passes": self.passes,
             "met_bar": self.met_bar,
             "infrastructure_failures": self.infrastructure_failures,
@@ -818,9 +820,13 @@ def _go_sample_dirs() -> list[Path]:
 def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = False, *,
               results_root: Path | None = None, opencode_argv: list[str] | None = None,
               product: bool = False, arc: bool = False, arc_src: Path | None = None,
-              roadmap: str = "none") -> RoundResult:
+              roadmap: str = "none", time_limit_s: int | None = None) -> RoundResult:
     test_dir = Path(test_dir).resolve()
     test = load_acceptance(test_dir)
+    if time_limit_s is not None:
+        if time_limit_s <= 0:
+            raise ValueError("--time-limit-s must be positive")
+        test = replace(test, time_limit_s=time_limit_s)  # overrides test.yaml for this round only
     root = Path(results_root or RESULTS).resolve()
     mirrors = proxy = cli = arc_bin = None
     if roadmap not in ROADMAPS:
@@ -865,7 +871,8 @@ def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = F
 
     out = round_dir(root, test.name, round_no, baseline, roadmap)
     out.mkdir(parents=True, exist_ok=True)
-    result = RoundResult(test.name, round_no, product=product, arc=arc, roadmap=roadmap)
+    result = RoundResult(test.name, round_no, product=product, arc=arc, roadmap=roadmap,
+                         time_limit_s=test.time_limit_s)
     for k in range(1, trials + 1):
         tr = run_trial(test, index_md, out / f"trial-{k}", mirrors, proxy, opencode_argv,
                        test_dir=test_dir, branch=branch, baseline=baseline, cli=cli, arc=arc_bin,

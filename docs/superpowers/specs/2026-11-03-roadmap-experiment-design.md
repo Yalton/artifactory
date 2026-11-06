@@ -155,3 +155,15 @@ Screenshots of the title, a room and the dialogue box (godot-shot), viewed, for 
 2. Write and review the frozen frontier roadmap.
 3. Run the 9 trials, after round 9.
 4. Report: `results/roadmap/REPORT.md` and an update to the standard's results doc.
+
+## Round 11: 12-hour trials
+
+Round 10 (`results/roadmap/REPORT.md`) scored 0 of 9: every trial hit the 4-hour limit. A bead session took about an hour, so the bead conditions finished only 3–4 of their 11–16 beads. The preregistered extension (2 more 4-hour trials per condition) was not run, because it cannot break a tie at zero. The user chose longer trials instead (2026-11-06).
+
+Round 11 repeats round 10 with one change: each trial gets 12 hours (`artifactory round --time-limit-s 43200`), recorded as `time_limit_s` in `round.json`. Everything else is unchanged:
+- the frozen frontier roadmap;
+- the writer prompt and the 20-minute ornith writing phase;
+- the checks and the arc setup;
+- 3 trials per condition, interleaved as in round 10.
+
+A trial lost to infrastructure is re-run once. The extension rule is not applied; the round 11 report states the pass counts with the per-check comparison. The full round takes up to 108 hours of the local model.
