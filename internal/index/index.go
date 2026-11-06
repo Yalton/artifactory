@@ -2,6 +2,7 @@
 package index
 
 import (
+	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -64,16 +65,21 @@ func AgentsBlock(eco string, opt Options) string {
 }
 
 // WriteAgents replaces the marked block in path, or appends it after a blank
-// line, creating the file if needed.
+// line, creating the file if needed. A begin marker with no end marker after
+// it is an error: guessing where the old block ends could delete the user's
+// text, and appending would leave two blocks.
 func WriteAgents(path, block string) error {
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	text := string(data)
-	b, e := strings.Index(text, beginMarker), strings.Index(text, endMarker)
-	if b >= 0 && e > b {
-		e += len(endMarker)
+	if b := strings.Index(text, beginMarker); b >= 0 {
+		e := strings.Index(text[b:], endMarker)
+		if e < 0 {
+			return fmt.Errorf("%s has %s but no %s after it; add the end marker or remove the old block, then re-run", path, beginMarker, endMarker)
+		}
+		e += b + len(endMarker)
 		if e < len(text) && text[e] == '\n' {
 			e++
 		}

@@ -134,3 +134,29 @@ func TestCLIInstallRenderMatchesGolden(t *testing.T) {
 		t.Errorf("raw render mentions the CLI")
 	}
 }
+
+func TestWriteAgentsRefusesUnterminatedBlock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "AGENTS.md")
+	orig := "# Mine\n\n<!-- artifactory:begin -->\nold\n\nuser text after\n"
+	os.WriteFile(path, []byte(orig), 0o644)
+	err := WriteAgents(path, AgentsBlock("go", Options{}))
+	if err == nil || !strings.Contains(err.Error(), "<!-- artifactory:end -->") {
+		t.Fatalf("err = %v, want a missing end marker error", err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != orig {
+		t.Errorf("file changed: %q", got)
+	}
+}
+
+func TestWriteAgentsIgnoresStrayEndBeforeBlock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "AGENTS.md")
+	os.WriteFile(path, []byte("<!-- artifactory:end -->\n# Mine\n\n<!-- artifactory:begin -->\nold\n<!-- artifactory:end -->\ntail\n"), 0o644)
+	if err := WriteAgents(path, AgentsBlock("go", Options{})); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(path)
+	s := string(got)
+	if strings.Count(s, "<!-- artifactory:begin -->") != 1 || strings.Contains(s, "\nold\n") || !strings.HasSuffix(s, "tail\n") {
+		t.Errorf("block not replaced in place: %q", s)
+	}
+}
