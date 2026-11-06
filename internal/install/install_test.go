@@ -140,6 +140,28 @@ func TestInstallGoModule(t *testing.T) {
 	if err != nil || !strings.Contains(dir, "kvstore@v0.1.0") {
 		t.Errorf("Locate = %q, %v", dir, err)
 	}
+
+	// Installed reads the copy in the module cache, with the proxy gone.
+	t.Setenv("GOPROXY", "file://"+filepath.Join(t.TempDir(), "gone"))
+	got := Installed(proj, "go", []string{"kvstore", "absent"})
+	if len(got) != 1 || got["kvstore"].Version != "0.1.0" {
+		t.Errorf("Installed = %+v", got)
+	}
+}
+
+func TestInstalledGodot(t *testing.T) {
+	proj := t.TempDir()
+	src, _ := filepath.Abs("../testdata/kits/CursorKit")
+	if err := os.MkdirAll(filepath.Join(proj, "addons"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(src, filepath.Join(proj, "addons", "CursorKit")); err != nil {
+		t.Fatal(err)
+	}
+	got := Installed(proj, "godot-csharp", []string{"CursorKit", "CrashKit"})
+	if len(got) != 1 || got["CursorKit"].Name != "CursorKit" {
+		t.Errorf("Installed = %+v", got)
+	}
 }
 
 func TestRunFailure(t *testing.T) {

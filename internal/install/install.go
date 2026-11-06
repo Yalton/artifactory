@@ -78,3 +78,58 @@ func Run(ctx context.Context, projectDir string, m catalog.Module) (string, erro
 	}
 	return d.Version, nil
 }
+
+// Installed reads the installed copy's module.yaml for each named module in
+// projectDir, an ecosystem project, without touching the network. A godot-csharp
+// module is read from addons/<Name>; a go module from the module cache
+// directory of whichever dependency in the build list carries a module.yaml
+// with that name. Names whose installed descriptor cannot be found or is
+// invalid are left out of the result.
+func Installed(projectDir, ecosystem string, names []string) map[string]descriptor.Descriptor {
+	want := map[string]bool{}
+	for _, n := range names {
+		want[n] = true
+	}
+	found := map[string]descriptor.Descriptor{}
+	if len(want) == 0 {
+		return found
+	}
+	if ecosystem == descriptor.GodotCSharp {
+		for n := range want {
+			if d, err := descriptor.Load(filepath.Join(projectDir, "addons", n)); err == nil && d.Name == n {
+				found[n] = d
+			}
+		}
+		return found
+	}
+	for _, dir := range goModuleDirs(projectDir) {
+		d, err := descriptor.Load(dir)
+		if err != nil || !want[d.Name] || d.Ecosystem != ecosystem {
+			continue
+		}
+		if _, dup := found[d.Name]; !dup {
+			found[d.Name] = d
+		}
+	}
+	return found
+}
+
+// goModuleDirs lists the module cache directories of projectDir's
+// dependencies with the network, toolchain downloads and go.mod updates all
+// off. Modules not in the cache have no directory and are skipped; any
+// failure yields what was listed before it.
+func goModuleDirs(projectDir string) []string {
+	cmd := exec.Command("go", "list", "-m", "-e", "-f", "{{if not .Main}}{{.Dir}}{{end}}", "all")
+	cmd.Dir = projectDir
+	cmd.Env = append(os.Environ(), "GOPROXY=off", "GOFLAGS=-mod=readonly", "GOTOOLCHAIN=local")
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	_ = cmd.Run()
+	var dirs []string
+	for _, l := range strings.Split(stdout.String(), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			dirs = append(dirs, l)
+		}
+	}
+	return dirs
+}

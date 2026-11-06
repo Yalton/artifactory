@@ -185,6 +185,10 @@ func resolveArc(dir, mode string) (bool, string, error) {
 }
 
 // Index rewrites MODULES.md and, unless modulesOnly, the AGENTS.md block.
+// Each installed module is described by its installed copy's module.yaml
+// (see install.Installed); in-scope modules not installed, and installed ones
+// whose copy cannot be read, come from the catalog's latest tag. The provider
+// is opened only when some module needs the catalog.
 // arcMode is auto, on or off (empty means auto). A full index shows each
 // module's install command as `artifactory install NAME`; modulesOnly keeps
 // the raw install line.
@@ -201,30 +205,46 @@ func (a App) Index(ctx context.Context, dir string, modulesOnly bool, arcMode st
 	var ds []descriptor.Descriptor
 	var reg []arcreg.Entry
 	var skipped []string
-	if len(f.Modules) > 0 {
+	// Installed modules render from their installed module.yaml; the catalog
+	// is loaded only for the rest, so a fully installed project needs no
+	// provider.
+	var installed []string
+	for _, e := range f.Modules {
+		if e.Version != "" {
+			installed = append(installed, e.Name)
+		}
+	}
+	local := install.Installed(dir, f.Ecosystem, installed)
+	var mods []catalog.Module
+	if len(local) < len(f.Modules) {
 		p, err := a.ResolveProvider("", dir)
 		if err != nil {
 			return IndexResult{}, usageErr(err)
 		}
-		mods, _, err := catalog.Load(ctx, p)
-		if err != nil {
+		if mods, _, err = catalog.Load(ctx, p); err != nil {
 			return IndexResult{}, usageErr(err)
 		}
-		for _, e := range f.Modules {
-			m, ok := catalog.Find(mods, e.Name)
-			if !ok {
-				return IndexResult{}, problemErr("module " + e.Name + " is in scope but not in the catalog")
+	}
+	for _, e := range f.Modules {
+		var m catalog.Module
+		d, ok := local[e.Name]
+		if ok {
+			m = catalog.Module{Descriptor: d}
+		} else {
+			m, ok = catalog.Find(mods, e.Name)
+		}
+		if !ok {
+			return IndexResult{}, problemErr("module " + e.Name + " is in scope but not in the catalog")
+		}
+		ds = append(ds, m.Descriptor)
+		if e.Version != "" {
+			ae, err := arcEntry(m)
+			if err != nil {
+				skipped = append(skipped, "arc: "+m.Name+" not registered: "+err.Error())
+				reg = append(reg, arcreg.Entry{ID: m.Name, Keep: true})
+				continue
 			}
-			ds = append(ds, m.Descriptor)
-			if e.Version != "" {
-				ae, err := arcEntry(m)
-				if err != nil {
-					skipped = append(skipped, "arc: "+m.Name+" not registered: "+err.Error())
-					reg = append(reg, arcreg.Entry{ID: m.Name, Keep: true})
-					continue
-				}
-				reg = append(reg, ae)
-			}
+			reg = append(reg, ae)
 		}
 	}
 	var warnings []string
