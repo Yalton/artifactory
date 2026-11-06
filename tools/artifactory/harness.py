@@ -42,7 +42,7 @@ import yaml
 from .acceptance import AcceptanceTest, load_acceptance
 from .checks.go import go_env
 from .goproxy import build_goproxy
-from .pyindex import build_pyindex, index_env, uv_binary
+from .pyindex import build_backends, build_pyindex, download_wheels, index_env, uv_binary
 from .result import CheckResult, TrialResult
 from .sandbox import allowlist, sandbox_command
 
@@ -251,6 +251,19 @@ def _tool_binds(mirrors: Path | None, proxy: Path | None, bin_dir: Path,
     return binds
 
 
+def _install_uv(dest: Path) -> None:
+    """Hard-link the host uv into the trial bin (copy across filesystems), then check that it runs."""
+    src = uv_binary()
+    try:
+        os.link(src, dest)
+    except OSError:
+        shutil.copy2(src, dest)
+    r = subprocess.run([str(dest), "--version"], capture_output=True, text=True)
+    if r.returncode != 0 or not r.stdout.startswith("uv "):
+        raise RuntimeError(f"uv installed at {dest} (from {src}) does not run: "
+                           f"{r.returncode}: {r.stderr.strip() or r.stdout.strip()}")
+
+
 def _run_tool(argv: list[str], env: dict[str, str], home: Path, cwd: Path | None = None) -> None:
     r = subprocess.run(argv, capture_output=True, text=True, cwd=cwd, env={**env, "HOME": str(home)})
     if r.returncode != 0:
@@ -339,9 +352,11 @@ def prepare_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors:
     home.mkdir()
     _write_home(home, mirrors)
     bin_dir.mkdir()
+    if pyindex is not None and not pyindex.is_dir():
+        raise FileNotFoundError(f"Python wheel index {pyindex} does not exist; build it with build_pyindex")
     env = _base_env(home, bin_dir, proxy, pyindex)
     if pyindex is not None:
-        shutil.copy2(uv_binary(), bin_dir / "uv")
+        _install_uv(bin_dir / "uv")
     _git("init", "-q", "-b", "main", cwd=project)
     if cli is not None:
         _product_setup(test, Path(cli), project, home, bin_dir, mirrors, env, Path(arc) if arc else None)
@@ -938,11 +953,12 @@ def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = F
         else:
             index_md = render_index(build_cli(root), test.ecosystem, f"dir:{mirrors}", test.modules)
         if test.ecosystem == "python":
-            pyindex = root / "pyindex"
+            pyindex = root / "pyindex" / test.name  # per test, so rounds of different tests keep their own
             if pyindex.exists():
                 shutil.rmtree(pyindex)
             with tempfile.TemporaryDirectory(prefix="pykits-") as tmp:
                 build_pyindex(export_kits(mirrors, test.modules, branch, Path(tmp)), pyindex)
+            download_wheels([*build_backends(), *test.python_wheels], pyindex)
 
     out = round_dir(root, test.name, round_no, baseline, roadmap)
     out.mkdir(parents=True, exist_ok=True)
@@ -965,9 +981,13 @@ def export_kits(mirrors: Path, modules: list[str], branch: str, dest: Path) -> l
     for m in modules:
         d = dest / m
         d.mkdir(parents=True)
-        archive = subprocess.run(["git", "--git-dir", str(mirrors / f"{m}.git"), "archive", f"refs/heads/{branch}"],
-                                 check=True, capture_output=True).stdout
-        subprocess.run(["tar", "-x", "-C", str(d)], input=archive, check=True, capture_output=True)
+        try:
+            archive = subprocess.run(["git", "--git-dir", str(mirrors / f"{m}.git"), "archive",
+                                      f"refs/heads/{branch}"], check=True, capture_output=True).stdout
+            subprocess.run(["tar", "-x", "-C", str(d)], input=archive, check=True, capture_output=True)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"cannot export kit {m} ({branch}) from {mirrors / (m + '.git')}: "
+                               f"{e.stderr.decode(errors='replace').strip()}") from e
         dirs.append(d)
     return dirs
 

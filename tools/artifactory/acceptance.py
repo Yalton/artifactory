@@ -18,6 +18,7 @@ class AcceptanceTest:
     duplication: dict[str, list[str]]
     roadmap_prompt: str | None = None
     probe: str | None = None
+    python_wheels: tuple[str, ...] = ()  # requirement specs put in the trial's wheel index (Python tests)
     dir: Path = Path(".")
 
 
@@ -35,5 +36,6 @@ def load_acceptance(dir: Path) -> AcceptanceTest:
         duplication={k: list(v) for k, v in dup.items()},
         roadmap_prompt=(dir / cfg["roadmap_prompt"]).read_text() if cfg.get("roadmap_prompt") else None,
         probe=cfg.get("probe"),
+        python_wheels=tuple(str(x) for x in cfg.get("python_wheels") or ()),
         dir=dir,
     )

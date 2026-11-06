@@ -3,8 +3,10 @@
 Trial sandboxes have no internet, so pip and uv inside them install only from
 this directory. Kit wheels are built on the host with `uv build --wheel` (the
 build backend comes from the host's uv cache or PyPI; the sandbox never builds
-kits). Pinned third-party wheels, for kit dependencies and for build backends
-of projects the model writes, are copied in as they are.
+kits). Third-party wheels come in two ways: wheel files copied as they are, and
+requirement specs (a test's `python_wheels`, plus build_backends() so a project
+the model writes with uv_build or hatchling builds offline) that
+`download_wheels` resolves with pip on the host, for the sandbox interpreter.
 
 The directory is a pip/uv "find-links" location: wheel files at the top
 level, nothing else. `index_env` gives the variables that point both tools at
@@ -17,6 +19,9 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+
+
+SANDBOX_PYTHON = "/usr/bin/python3"  # the interpreter trials see; downloaded wheels must suit it
 
 
 def uv_binary() -> Path:
@@ -51,6 +56,42 @@ def build_pyindex(kit_dirs: list[Path], out: Path, wheels: list[Path] = ()) -> l
             raise ValueError(f"{w} is not a wheel file")
         built.append(_place(w, out))
     return built
+
+
+def build_backends() -> list[str]:
+    """uv_build in the range `uv init` (this uv) pins, and hatchling with its dependencies."""
+    major, minor = _uv_version()[:2]
+    return [f"uv_build>={major}.{minor}.0,<{major}.{minor + 1}", "hatchling"]
+
+
+def _uv_version() -> tuple[int, ...]:
+    r = subprocess.run([str(uv_binary()), "--version"], capture_output=True, text=True, check=True)
+    return tuple(int(x) for x in r.stdout.split()[1].split(".")[:3])
+
+
+def download_wheels(specs: list[str], out: Path) -> list[Path]:
+    """Resolve `specs` and their dependencies to wheels in `out`; return the wheels it added.
+
+    Host side only (needs PyPI or the pip cache). pip runs on SANDBOX_PYTHON in a throwaway uv
+    environment, so platform and Python tags fit the sandbox. Only wheels are taken: the sandbox
+    cannot fetch an sdist's build requirements.
+    """
+    out = Path(out).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    if not specs:
+        return []
+    before = set(out.glob("*.whl"))
+    with tempfile.TemporaryDirectory(prefix="pywheels-") as tmp:
+        argv = [str(uv_binary()), "run", "--no-project", "--isolated", "--python", SANDBOX_PYTHON, "--with", "pip",
+                "--", "python", "-m", "pip", "download", "--quiet", "--disable-pip-version-check",
+                "--only-binary=:all:", "--dest", tmp, *specs]
+        r = subprocess.run(argv, capture_output=True, text=True, env={**os.environ, "UV_NO_CONFIG": "1"})
+        if r.returncode != 0:
+            raise RuntimeError(f"pip download {' '.join(specs)} failed ({r.returncode}): "
+                               f"{r.stderr.strip() or r.stdout.strip()}")
+        for w in sorted(Path(tmp).glob("*.whl")):
+            _place(w, out)
+    return sorted(set(out.glob("*.whl")) - before)
 
 
 def _place(wheel: Path, out: Path) -> Path:
