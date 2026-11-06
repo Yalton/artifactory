@@ -32,6 +32,14 @@ def test_kits_unknown_names_and_missing_lines(tmp_path):
     assert s["beads"] == 4
 
 
+def test_every_modules_line_of_a_bead_counts(tmp_path):
+    f = write(tmp_path / "r.jsonl", [bead("a", "Modules: CursorKit\nMore text.\nModules: Bogus, SettingsKit")])
+    s = score_roadmap(f, KITS, CONTRACTS)
+    assert s["kits_named"] == ["CursorKit", "SettingsKit"]
+    assert s["unknown_modules"] == ["Bogus"]
+    assert s["no_modules_line"] == []
+
+
 def test_status_counts_and_non_issue_rows_ignored(tmp_path):
     f = write(tmp_path / "r.jsonl", [
         bead("a", "Modules: none", "closed"), bead("b", "Modules: none", "blocked"),

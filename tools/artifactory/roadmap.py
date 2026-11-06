@@ -27,11 +27,11 @@ def score_roadmap(jsonl_path: Path, kits: list[str], contracts: list[str]) -> di
     gap_dialogue = False
     for b in beads:
         text = b.get("description") or ""
-        m = _MODULES_LINE.search(text)
-        if m is None:
+        lines = _MODULES_LINE.findall(text)  # every Modules: line counts; the names are their union
+        if not lines:
             missing.append(b["id"])
-        else:
-            for name in (n.strip() for n in m.group(1).split(",")):
+        for line in lines:
+            for name in (n.strip() for n in line.split(",")):
                 if name and name.lower() != "none":
                     (named if name in kits else unknown).add(name)
         if "gap" in (b.get("labels") or []) and _word("dialogue", f"{b.get('title', '')}\n{text}", re.I):
