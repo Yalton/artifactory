@@ -88,3 +88,98 @@ def test_docs_travel_as_package_data():
     pkg = files("json_kv")
     assert "name: json-kv" in (pkg / "module.yaml").read_text()
     assert "# json-kv" in (pkg / "README.md").read_text()
+
+
+def test_put_and_get_copy_values(tmp_path):
+    s = json_kv.open(tmp_path / "d.json")
+    value = {"n": [1, 2]}
+    s.put("k", value)
+    value["n"].append(3)
+    got = s.get("k")
+    assert got == {"n": [1, 2]}
+    got["n"].append(4)
+    assert s.get("k") == {"n": [1, 2]}
+    s.put("t", (1, 2))
+    assert s.get("t") == [1, 2]
+
+
+def test_replace_keeps_the_file_mode(tmp_path):
+    import os
+    import stat
+
+    path = tmp_path / "d.json"
+    json_kv.open(path)
+    os.chmod(path, 0o640)
+    s = json_kv.open(path)
+    s.put("a", 1)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+
+
+def test_new_file_mode_follows_the_umask(tmp_path):
+    import os
+    import stat
+
+    old = os.umask(0o027)
+    try:
+        json_kv.open(tmp_path / "d.json").put("a", 1)
+    finally:
+        os.umask(old)
+    assert stat.S_IMODE((tmp_path / "d.json").stat().st_mode) == 0o640
+
+
+def test_failed_write_raises_store_error_and_keeps_state(tmp_path, monkeypatch):
+    import os
+
+    s = json_kv.open(tmp_path / "d.json")
+    s.put("a", 1)
+
+    def broken(*a, **k):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(os, "replace", broken)
+    with pytest.raises(StoreError, match="No space left"):
+        s.put("b", 2)
+    assert "b" not in s and s.get("a") == 1
+    assert [p.name for p in tmp_path.iterdir()] == ["d.json"]
+    monkeypatch.undo()
+    assert json_kv.open(tmp_path / "d.json").keys() == ["a"]
+
+
+@pytest.mark.parametrize("code,raises", [(22, False), (95, False), (5, True)])  # EINVAL, EOPNOTSUPP, EIO
+def test_directory_fsync_errors(tmp_path, monkeypatch, code, raises):
+    import os
+
+    s = json_kv.open(tmp_path / "d.json")
+    real = os.fsync
+    dirs = set()
+    real_open = os.open
+
+    def tracking_open(path, flags, *a, **k):
+        fd = real_open(path, flags, *a, **k)
+        if os.path.isdir(path):
+            dirs.add(fd)
+        return fd
+
+    def fsync(fd):
+        if fd in dirs:
+            raise OSError(code, os.strerror(code))
+        return real(fd)
+
+    monkeypatch.setattr(os, "open", tracking_open)
+    monkeypatch.setattr(os, "fsync", fsync)
+    if raises:
+        with pytest.raises(StoreError):
+            s.put("a", 1)
+    else:
+        s.put("a", 1)
+    assert s.get("a") == 1  # the file was replaced either way; memory matches disk
+    monkeypatch.undo()
+    assert json_kv.open(tmp_path / "d.json").get("a") == 1
+
+
+def test_unreadable_file_raises_store_error(tmp_path):
+    (tmp_path / "d.json").write_bytes(b"\xff\xfe")
+    with pytest.raises(StoreError):
+        json_kv.open(tmp_path / "d.json")
+    with pytest.raises(StoreError):
+        json_kv.open(tmp_path)  # a directory

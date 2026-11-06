@@ -5,6 +5,7 @@ The kits are not published yet, so `mirror_samples` stands in for `artifactory m
 mirrors (branch main, tag v<version>) of samples/python/* in tmp_path. From there the test takes the same
 path a round does: harness.build_python_index (export_kits, build_pyindex, download_wheels), prepare_trial
 and run_checker."""
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -14,6 +15,7 @@ import yaml
 
 from artifactory import harness
 from artifactory.acceptance import load_acceptance
+from artifactory.checks.duplication import check_duplication
 
 ROOT = Path(__file__).resolve().parents[2]
 SAMPLES = ROOT / "samples" / "python"
@@ -203,8 +205,26 @@ def kits(tmp_path_factory):
     try:
         index = harness.build_python_index(mirrors, test, harness.STITCH_BRANCH, tmp / "pyindex" / test.name)
     except RuntimeError as e:
-        pytest.skip(f"host cannot build the kit wheels or download the standard wheels (cold cache or offline?): {e}")
+        if not network_failure(str(e)):
+            raise  # a kit that does not build is a real failure
+        pytest.skip(f"host cannot fetch wheels (cold cache or offline?): {e}")
     return test, mirrors, index, names
+
+
+# uv's wording when it cannot reach PyPI for the build backend; pip download failures all count.
+_FETCH_ERRORS = ("Failed to fetch", "error sending request", "dns error", "Could not connect", "offline",
+                 "Network is unreachable", "Temporary failure in name resolution")
+
+
+def network_failure(message: str) -> bool:
+    """Whether build_python_index failed fetching wheels (download_wheels, or uv build getting uv_build)."""
+    return message.startswith("pip download ") or any(m in message for m in _FETCH_ERRORS)
+
+
+def test_network_failure_tells_fetching_from_building():
+    assert network_failure("pip download pytest==9.2.0 failed (1): no route")
+    assert network_failure("uv build /x failed (2): error: Failed to fetch: `https://pypi.org/simple/uv-build/`")
+    assert not network_failure("uv build /x failed (2): error: Expected a Python module at: `src/json_kv/__init__.py`")
 
 
 def test_index_holds_each_kit_wheel(kits):
@@ -222,6 +242,8 @@ def test_modules_md_renders_from_the_mirrors(kits, tmp_path):
     for m in test.modules:
         assert f"\n## {m}\n" in md
         assert f'pip install "{m} @ git+ssh://git@repo.billbert.co/artifactory/{m}.git@v0.1.0"' in md
+    # The consumer notes carry the pinning contract, so the prompt does not repeat it.
+    assert "Pin each module as `<name>==<version>` in `requirements.txt`" in md
 
 
 def run_trial_checker(kits, tmp_path, files: dict[str, str]):
@@ -251,3 +273,84 @@ def test_hand_rolled_store_fails_the_kit_checks(kits, tmp_path):
     dup = by_name["no_duplication"].detail
     assert "shortener/store.py" in dup and "json-kv pattern" in dup
     assert "env-settings pattern" not in dup and "http-runner pattern" not in dup
+
+
+# Small re-implementations of each kit's job. Every duplication.yaml pattern must flag at least one snippet
+# of its module, and every snippet must be flagged.
+REIMPLEMENTATIONS = {
+    "env-settings": [
+        'port = int(os.environ.get("SHORTENER_PORT", "8080"))',
+        'data = os.getenv("SHORTENER_DATA")',
+        "from os import environ, getenv",
+    ],
+    "json-kv": [
+        "data = json.load(f)",
+        "json.dump(data, f)",
+        'os.replace(tmp, path)',
+        'os.rename(tmp, path)',
+        "os.fsync(f.fileno())",
+        "Path(path).write_text(json.dumps(data))",
+        "p.write_bytes(raw)",
+        'with open(path, "w") as f:',
+        'with open(path, "wt", encoding="utf-8") as f:',
+        'with open(path, mode="a+") as f:',
+        'with open(path, "r+b") as f:',
+        'with open(Path(folder) / "x.json", "xb") as f:',
+        'with Path(path).open("w") as f:',
+        'f = os.fdopen(fd, "w")',
+        "import sqlite3",
+        "from tempfile import NamedTemporaryFile",
+        "import shelve",
+    ],
+    "http-runner": [
+        'server = ThreadingHTTPServer(("", port), Handler)',
+        "server.serve_forever()",
+        "import socketserver",
+        "from wsgiref.simple_server import make_server",
+        "server = await asyncio.start_server(handle, port=port)",
+        "signal.signal(signal.SIGTERM, stop)",
+        "from signal import SIGTERM, signal",
+        "loop.add_signal_handler(signal.SIGTERM, stop)",
+        'if self.path == "/healthz":',
+    ],
+}
+
+# Needed glue and the reference style that must not be flagged.
+GLUE = [
+    "store = json_kv.open(settings.data)",
+    'with open(path) as f:',
+    'with open(path, "rb") as f:',
+    'text = Path(path).read_text()',
+    "body = json.loads(self.rfile.read(n))",
+    'pool.shutdown()',
+    "from http.server import BaseHTTPRequestHandler",
+    "code = secrets.choice(ALPHABET)",
+]
+
+
+def test_every_duplication_pattern_flags_a_reimplementation():
+    dup = load_acceptance(TEST_DIR).duplication
+    assert set(REIMPLEMENTATIONS) == set(dup)
+    for module, patterns in dup.items():
+        compiled = [re.compile(p) for p in patterns]
+        for rx in compiled:
+            assert any(rx.search(line) for line in REIMPLEMENTATIONS[module]), f"{module}: {rx.pattern} flags nothing"
+        for line in REIMPLEMENTATIONS[module]:
+            assert any(rx.search(line) for rx in compiled), f"{module}: {line!r} is not flagged"
+    every = [re.compile(p) for ps in dup.values() for p in ps]
+    for line in GLUE:
+        assert not any(rx.search(line) for rx in every), f"glue flagged: {line!r}"
+
+
+def test_reference_solution_has_no_duplication_hits(tmp_path):
+    dup = load_acceptance(TEST_DIR).duplication
+    for name, files in (("ref", reference_files()), ("own", own_store_files())):
+        root = tmp_path / name
+        for rel, text in files.items():
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text(text)
+        result = check_duplication(root, sorted(root.rglob("*.py")), dup)
+        if name == "ref":
+            assert result.passed, result.detail
+        else:
+            assert not result.passed and "shortener/store.py" in result.detail

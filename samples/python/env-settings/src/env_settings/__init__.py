@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import re
+import types
 import typing
 from collections.abc import Mapping
 from pathlib import Path
@@ -14,6 +16,8 @@ __all__ = ["SettingsError", "load"]
 
 T = TypeVar("T")
 
+_INT = re.compile(r"[+-]?[0-9]+")
+_FLOAT = re.compile(r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?")
 _TRUE = {"1", "true", "yes", "on"}
 _FALSE = {"0", "false", "no", "off"}
 
@@ -55,22 +59,42 @@ def _read_file(file: str | os.PathLike | None) -> dict[str, str]:
     if file is None or str(file) == "":
         return {}
     try:
-        text = Path(file).read_text()
+        text = Path(file).read_text(encoding="utf-8")
     except FileNotFoundError:
         return {}
+    except (OSError, UnicodeDecodeError) as e:
+        raise SettingsError(f"{file}: cannot read: {e}") from e
     out = {}
     for n, line in enumerate(text.splitlines(), 1):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
         key, sep, value = line.partition("=")
         if not sep or not key.strip():
             raise SettingsError(f"{file}:{n}: want KEY=value, got {line!r}")
-        out[key.strip().upper()] = value.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        out[key.strip().upper()] = value
     return out
 
 
+def _optional(typ: object) -> tuple[object, bool]:
+    """(inner type, True) for `X | None` or Optional[X]; (typ, False) otherwise."""
+    if typing.get_origin(typ) in (typing.Union, types.UnionType):
+        args = typing.get_args(typ)
+        rest = [a for a in args if a is not type(None)]
+        if len(rest) == 1 and len(rest) < len(args):
+            return rest[0], True
+    return typ, False
+
+
 def _convert(raw: str, typ: object, var: str) -> object:
+    typ, optional = _optional(typ)
+    if optional and raw.strip() == "":
+        return None
     try:
         if typ is str:
             return raw
@@ -82,8 +106,12 @@ def _convert(raw: str, typ: object, var: str) -> object:
                 return False
             raise ValueError(f"not a boolean: {raw!r}")
         if typ is int:
+            if not _INT.fullmatch(raw.strip()):
+                raise ValueError(f"not an integer: {raw!r}")
             return int(raw.strip())
         if typ is float:
+            if not _FLOAT.fullmatch(raw.strip()):
+                raise ValueError(f"not a finite decimal number: {raw!r}")
             return float(raw.strip())
         if typ is Path:
             return Path(raw)

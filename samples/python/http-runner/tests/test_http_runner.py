@@ -157,6 +157,87 @@ def test_signal_stops_the_server_cleanly(tmp_path, sig):
     assert lines.count("[http-runner] live") == 1 and "returned" in lines and "Traceback" not in out, out
 
 
+def test_sigterm_with_an_idle_keep_alive_connection_returns_promptly(tmp_path):
+    port = free_port()
+    script = tmp_path / "app.py"
+    script.write_text(textwrap.dedent(f"""
+        from http.server import BaseHTTPRequestHandler
+        import http_runner
+
+        class H(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"hi")
+
+        http_runner.run(H, {port}, "127.0.0.1")
+        print("returned", flush=True)
+    """))
+    proc = subprocess.Popen([sys.executable, str(script)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, env={**os.environ, "PYTHONUNBUFFERED": "1"})
+    conn = None
+    try:
+        wait_up(port)
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/x")
+        r = conn.getresponse()
+        assert r.status == 200 and r.read() == b"hi" and not r.will_close  # the connection stays open, idle
+        start = time.monotonic()
+        proc.send_signal(signal.SIGTERM)
+        out, _ = proc.communicate(timeout=5)
+        took = time.monotonic() - start
+    finally:
+        if conn is not None:
+            conn.close()
+        proc.kill()
+    assert proc.returncode == 0 and "returned" in out and "Traceback" not in out, out
+    assert took < 3, took
+
+
+def test_keep_alive_request_in_flight_finishes_then_closes():
+    started = threading.Event()
+
+    class Slow(Hello):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):
+            started.set()
+            time.sleep(0.5)
+            super().do_GET()
+
+    with Serving(Slow) as s:
+        conn = http.client.HTTPConnection("127.0.0.1", s.port, timeout=5)
+        got = {}
+
+        def call():
+            conn.request("GET", "/slow")
+            r = conn.getresponse()
+            got.update(status=r.status, body=r.read(), will_close=r.will_close)
+
+        t = threading.Thread(target=call)
+        t.start()
+        assert started.wait(5)
+        start = time.monotonic()
+        s.stop.set()
+        t.join(10)
+        s.thread.join(10)
+        assert time.monotonic() - start < 3
+        conn.close()
+    assert got["status"] == 200 and got["body"] == b"hello /slow"
+
+
+def test_serve_loop_error_is_re_raised(monkeypatch):
+    def boom(self, poll_interval=0.5):
+        raise RuntimeError("selector broke")
+
+    monkeypatch.setattr(http_runner._Server, "serve_forever", boom)
+    with pytest.raises(RuntimeError, match="selector broke"):
+        http_runner.run(Hello, free_port(), "127.0.0.1", stop=threading.Event())
+
+
 def test_docs_travel_as_package_data():
     from importlib.resources import files
     pkg = files("http_runner")

@@ -51,7 +51,19 @@ http_runner.run(make_handler(store), port=settings.port)
 - `GET /healthz` (and `HEAD`) returns 200 `ok`. Do not handle it yourself. Every other request goes to your handler.
 - `run(..., health_check=fn)` makes `/healthz` return 503 when `fn()` raises or returns `False`.
 - `run(handler, port, host="")` listens on all IPv4 addresses by default. It raises `OSError` at once if the port cannot be bound.
-- Each request runs in its own thread, so shared state must be thread-safe. On shutdown, requests in flight finish before `run` returns.
-- `run(..., stop=threading.Event())` also stops the server when the event is set. For tests and embedding only. Called outside the main thread, `run` installs no signal handlers and stops only on `stop`.
+- Each request runs in its own thread, so shared state must be thread-safe. On shutdown, idle keep-alive connections are closed and requests in flight get up to 10 seconds to finish before `run` returns.
+- An error that stops the server loop is re-raised from `run`.
+- Signal handling needs the main thread: call `run` from the main thread of your app. Called from any other thread, `run` installs no signal handlers and stops only when its `stop` event is set:
+
+```python
+import threading
+
+stop = threading.Event()
+t = threading.Thread(target=http_runner.run, args=(Handler,), kwargs={"port": 8080, "stop": stop})
+t.start()
+...
+stop.set()  # run returns after a graceful stop
+t.join()
+```
 
 Runnable example: `example/main.py`. Test: `pytest`.

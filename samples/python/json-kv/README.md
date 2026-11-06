@@ -22,9 +22,10 @@ store.put("other", {"n": 1})                 # insert or overwrite
 
 - `put_if_absent` claims a key without races: use it for unique ids.
 - `get(key, default)` returns `default` for a missing key. `delete(key)` reports whether the key existed. `keys()` lists the keys; `len(store)` and `key in store` work.
+- `put` stores a copy and `get` returns a copy, both made by a JSON round trip. Changing a returned value does not change the store, tuples come back as lists, and non-str dict keys come back as strings.
 - A value that `json` cannot encode raises `TypeError` and leaves the store unchanged.
-- Each write replaces the file atomically (temporary file, fsync, rename, fsync of the folder).
-- `open` raises `json_kv.StoreError` if the file exists but is not a JSON object.
+- Each write rewrites the whole file atomically (temporary file, fsync, rename, fsync of the folder), keeping the file's permissions. Use it for small data: write cost grows with the store.
+- `open` raises `json_kv.StoreError` if the file exists but cannot be read or is not a JSON object. A write that fails on disk raises `StoreError` and leaves the store unchanged.
 - One process per file: the lock is per `Store`, not across processes.
 
 Runnable example: `example/main.py`. Test: `pytest`.

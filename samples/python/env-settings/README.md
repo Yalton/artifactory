@@ -28,9 +28,10 @@ settings = env_settings.load(Settings, "MYAPP")
 ## Notes
 
 - For each field, the value comes from, in order: the environment variable `<PREFIX>_<FIELD>` (field name in upper case), the line `<FIELD>=value` in `file`, the field default.
-- `load(Settings, "MYAPP", file="app.env")` also reads that file. A missing file is ignored. Blank lines and lines starting with `#` are skipped.
-- Supported field types: `str`, `int`, `float`, `bool` (`1/true/yes/on`, `0/false/no/off`) and `pathlib.Path`.
-- A field with no default and no value, a value that does not convert, or a malformed file line raises `env_settings.SettingsError` naming the variable.
+- `load(Settings, "MYAPP", file="app.env")` also reads that file. A missing file is ignored. Blank lines and lines starting with `#` are skipped. A line may start with `export `, and a value wrapped in matching `"` or `'` quotes loses them. There are no inline comments: `PORT=80 # web` sets `80 # web`.
+- Supported field types: `str`, `int`, `float`, `bool` (`1/true/yes/on`, `0/false/no/off`) and `pathlib.Path`, each also as `X | None` (or `Optional[X]`), where an empty value gives `None`.
+- Numbers are strict: `int` takes digits with an optional sign (no `1_000`), `float` takes plain decimals or exponents (no `nan`, `inf` or `_`).
+- A field with no default and no value, a value that does not convert, a malformed file line or a file that cannot be read raises `env_settings.SettingsError` naming the variable or file.
 - `environ=` takes a mapping instead of `os.environ`, for tests.
 
 Runnable example: `example/main.py`. Test: `pytest`.
