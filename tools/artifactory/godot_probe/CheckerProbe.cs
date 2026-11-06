@@ -29,10 +29,14 @@ public partial class CheckerProbe : Node
     // lines without it, so game code cannot fake a result by printing one.
     private string _nonce = "";
 
-    // Residual risk: this autoload is the first in [autoload], so it reads and unsets the variable
-    // before any other autoload's or scene's _Ready. Game code that runs earlier (a C# static
-    // initializer or module initializer in the game assembly), or that reads /proc/self/environ,
-    // can still see the nonce.
+    // This autoload is the first in [autoload], so its _Ready reads and unsets the variable before
+    // any other autoload's or scene's _Ready. Residual risks:
+    //  - Code that runs earlier than this _Ready can still read the variable: other autoloads'
+    //    constructors and field initializers (all autoloads are instantiated before any _Ready),
+    //    C# static and module initializers, and /proc/self/environ.
+    //  - Game code can watch the output with OS.AddLogger and print a PROBE line with the nonce
+    //    after seeing the real one. The checker mitigates this: it fails a check that has more
+    //    than one nonce-carrying line.
     private void TakeNonce()
     {
         _nonce = OS.GetEnvironment("ARTIFACTORY_PROBE_NONCE");
