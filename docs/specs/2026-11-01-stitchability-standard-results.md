@@ -90,4 +90,4 @@ cd results/godot-capsule-room/round-6/trial-1/project && dotnet build && godot -
 
 ## Roadmap experiment
 
-Planned, no results yet. It tests whether a roadmap of beads written by a frontier model, or by the local model, changes what the build session does with the kits. Design: `docs/superpowers/specs/2026-11-03-roadmap-experiment-design.md`. Harness commands are in `docs/superpowers/specs/2026-11-02-artifactory-cli-design.md` under "The harness".
+Round 10 (Lantern Keep, 3 trials per condition, 4 h each): 0 of 9 passed. Roadmaps (frontier and ornith) produced a build in 5 of 6 trials, one prompt (none) in 0 of 3. Frontier's roadmap got rooms, movement and a visible player every time; Ornith's installed all kits first and built no rooms. 4 hours covers about a quarter of a 16-bead roadmap at this model's speed. Report: `results/roadmap/REPORT.md`. It tests whether a roadmap of beads written by a frontier model, or by the local model, changes what the build session does with the kits. Design: `docs/superpowers/specs/2026-11-03-roadmap-experiment-design.md`. Harness commands are in `docs/superpowers/specs/2026-11-02-artifactory-cli-design.md` under "The harness".
