@@ -25,7 +25,7 @@ func splitArgs(args []string) (names, flags []string) {
 	return args[:i], args[i:]
 }
 
-// runInit creates artifactory.yaml, then writes the index.
+// runInit writes the skill copies and artifactory.yaml, then the index.
 func runInit(out *output, args []string) int {
 	const use = "usage: artifactory init [--ecosystem E] [--provider SPEC] [--project DIR]"
 	fs := newFlags("init")
@@ -48,11 +48,13 @@ func runInit(out *output, args []string) int {
 	if !contains(descriptor.Ecosystems, *eco) {
 		return out.fail(exitUsage, "ecosystem must be one of "+strings.Join(descriptor.Ecosystems, ", "))
 	}
-	if err := project.Save(*dir, project.File{Ecosystem: *eco, Provider: *spec}); err != nil {
-		return out.fail(exitUsage, err.Error())
-	}
+	// Skills go first: artifactory.yaml blocks a second init, so a skill
+	// write failure must leave nothing behind that stops a re-run.
 	paths, err := writeSkills(*dir)
 	if err != nil {
+		return out.fail(exitUsage, err.Error())
+	}
+	if err := project.Save(*dir, project.File{Ecosystem: *eco, Provider: *spec}); err != nil {
 		return out.fail(exitUsage, err.Error())
 	}
 	if !out.json {

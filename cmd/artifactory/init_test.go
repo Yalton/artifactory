@@ -51,3 +51,22 @@ func TestSkillIsShort(t *testing.T) {
 		t.Errorf("SKILL.md has %d lines, want under 60", n)
 	}
 }
+
+func TestInitSkillFailureLeavesInitRerunnable(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module x\n"), 0o644)
+	os.MkdirAll(filepath.Join(dir, ".claude"), 0o755)
+	// A file where the skills folder belongs makes the skill write fail.
+	os.WriteFile(filepath.Join(dir, ".claude", "skills"), nil, 0o644)
+	code, _, _ := runCmd("init", "--project", dir, "--provider", "dir:"+kitsDir(t))
+	if code == 0 {
+		t.Fatal("init succeeded despite a blocked skill write")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "artifactory.yaml")); err == nil {
+		t.Fatal("artifactory.yaml written despite skill failure")
+	}
+	os.Remove(filepath.Join(dir, ".claude", "skills"))
+	if code, _, se := runCmd("init", "--project", dir, "--provider", "dir:"+kitsDir(t)); code != 0 {
+		t.Fatalf("re-run init: %d %s", code, se)
+	}
+}
