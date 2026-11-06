@@ -36,6 +36,9 @@ const (
 var stopwords = map[string]bool{
 	"the": true, "a": true, "an": true, "to": true, "of": true, "for": true,
 	"and": true, "or": true, "in": true, "on": true, "with": true,
+	"at": true, "by": true, "from": true, "into": true, "via": true,
+	"between": true, "during": true, "when": true, "while": true,
+	"is": true, "my": true,
 }
 
 // Tokens lowercases s and splits it on non-letters and non-digits.
@@ -120,11 +123,14 @@ func fieldHas(tokens []string, q string) bool {
 // summary, then replaces, then entry.
 //
 // A module that matches every distinct query word is kept. One that matches
-// only some of them is kept only when it matches at least half (rounded up)
-// and one of the matches is in its name; otherwise a generic word mentioned
-// in passing ("loading" in "saving and loading key bindings") would hide a
-// gap. Hits scoring under the threshold are dropped. Results sort by score
-// descending then name, and keep only ecosystem eco when eco is non-empty.
+// only some of them is kept when it matches at least a third (rounded up) and
+// one of the matches is strong: the word is in its name ("save" for
+// RunSaveKit), or it is in its replaces list and no other module searched
+// matches it at all ("volume" for SettingsKit). A word several modules share,
+// such as "loading", or one a summary uses in passing ("in-game", "toggled"),
+// is not enough on its own, so "model loading" reports a gap. Hits scoring under the
+// threshold are dropped. Results sort by score descending then name, and keep
+// only ecosystem eco when eco is non-empty.
 func Rank(mods []catalog.Module, query []string, eco string) []Hit {
 	var qs []string
 	seen := map[string]bool{}
@@ -139,8 +145,15 @@ func Rank(mods []catalog.Module, query []string, eco string) []Hit {
 			}
 		}
 	}
-	need := (len(qs) + 1) / 2
-	hits := []Hit{}
+	need := (len(qs) + 2) / 3
+	type scored struct {
+		mod    catalog.Module
+		score  float64
+		words  []string // matched query words
+		strong []string // matched words in the name ("") or replaces
+	}
+	var cands []scored
+	df := map[string]int{} // modules matching each query word
 	for _, mod := range mods {
 		if eco != "" && mod.Ecosystem != eco {
 			continue
@@ -149,15 +162,14 @@ func Rank(mods []catalog.Module, query []string, eco string) []Hit {
 		summary := stems(fieldTokens(mod.Summary))
 		replaces := stems(fieldTokens(strings.Join(mod.Replaces, " ")))
 		entry := stems(fieldTokens(strings.Join(mod.Entry, " ")))
-		score := 0.0
-		matched, inName := 0, false
+		c := scored{mod: mod}
 		for _, q := range qs {
 			// Each query word counts once, at its best field.
 			w := 0.0
 			switch {
 			case fieldHas(name, q):
 				w = wName
-				inName = true
+				c.strong = append(c.strong, "")
 			case fieldHas(summary, q):
 				w = wSummary
 			case fieldHas(replaces, q):
@@ -165,14 +177,28 @@ func Rank(mods []catalog.Module, query []string, eco string) []Hit {
 			case fieldHas(entry, q):
 				w = wEntry
 			}
+			if w != wName && fieldHas(replaces, q) {
+				c.strong = append(c.strong, q)
+			}
 			if w > 0 {
-				score += w
-				matched++
+				c.score += w
+				c.words = append(c.words, q)
+				df[q]++
 			}
 		}
-		enough := matched == len(qs) || (matched >= need && inName)
-		if matched > 0 && enough && score >= threshold {
-			hits = append(hits, Hit{Module: mod, Score: score})
+		if len(c.words) > 0 {
+			cands = append(cands, c)
+		}
+	}
+	hits := []Hit{}
+	for _, c := range cands {
+		strong := false
+		for _, q := range c.strong {
+			strong = strong || q == "" || df[q] == 1
+		}
+		enough := len(c.words) == len(qs) || (len(c.words) >= need && strong)
+		if enough && c.score >= threshold {
+			hits = append(hits, Hit{Module: c.mod, Score: c.score})
 		}
 	}
 	sort.SliceStable(hits, func(i, j int) bool {

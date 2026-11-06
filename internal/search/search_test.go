@@ -34,8 +34,10 @@ func TestRank(t *testing.T) {
 		{"no match", []string{"send", "mail", "to", "the", "IRS"}, "", nil},
 		{"prefix is one-way", []string{"model"}, "", nil},
 		{"query prefix of token", []string{"persist"}, "", []string{"kvstore"}},
-		{"half the words must match", []string{"mouse", "inventory", "drag", "drop"}, "", nil},
-		{"half the words is enough", []string{"mouse", "cursor", "inventory", "drag"}, "", []string{"CursorKit"}},
+		{"a third of the words must match", []string{"mouse", "inventory", "drag", "drop"}, "", nil},
+		{"a name word makes a partial match", []string{"mouse", "cursor", "inventory", "drag"}, "", []string{"CursorKit"}},
+		{"a word only one replaces list claims", []string{"mutex", "pool"}, "", []string{"kvstore"}},
+		{"a shared or summary-only word does not", []string{"load", "model"}, "", nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -103,6 +105,26 @@ func TestRankKits(t *testing.T) {
 		{"mouse cursor", "CursorKit"},
 		{"scene loading", "TransitionKit"},
 		{"rebind keys", "InputRemapKit"},
+		// Partial matches that still find the kit: a name word, or a word
+		// only one kit's replaces list claims.
+		{"volume slider", "SettingsKit"},
+		{"vsync setting", "SettingsKit"},
+		{"settings menu", "SettingsKit"},
+		{"fade between scenes", "TransitionKit"},
+		{"door transition between rooms", "TransitionKit"},
+		{"screen transition", "TransitionKit"},
+		{"crash report on exception", "CrashKit"},
+		{"developer console command", "DevConsoleKit"},
+		{"rebind controls", "InputRemapKit"},
+		{"key bindings", "InputRemapKit"},
+		{"custom mouse cursor", "CursorKit"},
+		{"hide cursor during play", "CursorKit"},
+		{"debug logging", "DebugLogKit"},
+		{"log room changes", "DebugLogKit"},
+		{"save player position", "RunSaveKit"},
+		// A word a summary uses in passing is not enough on its own.
+		{"fullscreen toggle", ""},
+		{"continue last game", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.query, func(t *testing.T) {
