@@ -70,7 +70,7 @@ func TestRunValidateOutput(t *testing.T) {
 	bad := mod(t, strings.Replace(validYAML, "ecosystem: go", "ecosystem: rust", 1))
 	var out, errb bytes.Buffer
 	run([]string{"validate", bad}, &out, &errb)
-	if want := bad + ": ecosystem: must be one of godot-csharp, go\n"; !strings.Contains(out.String()+errb.String(), want) {
+	if want := bad + ": ecosystem: must be one of godot-csharp, go, python\n"; !strings.Contains(out.String()+errb.String(), want) {
 		t.Errorf("output %q %q lacks %q", out.String(), errb.String(), want)
 	}
 }

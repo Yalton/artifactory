@@ -4,6 +4,7 @@ package install
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,10 +16,16 @@ import (
 	"repo.billbert.co/artifactory/artifactory/internal/descriptor"
 )
 
+// ErrPythonUnsupported is returned where the CLI cannot yet handle python modules.
+var ErrPythonUnsupported = errors.New("python modules are not supported yet by this command")
+
 // Locate finds the installed copy of m in projectDir. For godot-csharp it is
 // addons/<Name>. For go it is the module directory reported by `go list -m`
 // for the module path in the install line.
 func Locate(projectDir string, m catalog.Module) (string, error) {
+	if m.Ecosystem == descriptor.Python {
+		return "", ErrPythonUnsupported
+	}
 	if m.Ecosystem == descriptor.GodotCSharp {
 		dir := filepath.Join(projectDir, "addons", m.Name)
 		if _, err := os.Stat(dir); err != nil {
@@ -63,6 +70,9 @@ func GoModulePath(line string) (string, error) {
 // Run executes m.Install with sh -c in projectDir, streaming output to
 // stderr, then reads the installed copy's module.yaml and returns its version.
 func Run(ctx context.Context, projectDir string, m catalog.Module) (string, error) {
+	if m.Ecosystem == descriptor.Python {
+		return "", ErrPythonUnsupported
+	}
 	cmd := exec.CommandContext(ctx, "sh", "-c", m.Install)
 	cmd.Dir = projectDir
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
