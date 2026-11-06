@@ -11,11 +11,13 @@ route back to the host: no host loopback services, no port forwarding either
 way, and no abstract unix sockets (X11, D-Bus) since those are per network
 namespace. Egress is an allowlist: before bwrap starts, an nftables output
 chain in that namespace accepts loopback and TCP to each allowed address:port
-and rejects everything else (other hosts, other ports, UDP, ICMP, IPv6).
-Callers pass the allowed endpoints (the harness passes the llama server for
-the agent, nothing for the checker); ARTIFACTORY_SANDBOX_ALLOW adds more for
-every sandbox, as comma-separated IP:PORT (e.g. a local NuGet feed). There
-is no DNS: the host resolver socket is not bound, so names do not resolve.
+and rejects everything else (other hosts, other ports, UDP, ICMP); outbound
+IPv6 neighbor and router solicitations pass so allowed IPv6 endpoints work.
+Callers pass the exact endpoints to allow. The harness passes `allowlist()` of
+the llama server for the agent, which adds ARTIFACTORY_SANDBOX_ALLOW
+(comma-separated IP:PORT, e.g. a local NuGet feed); it passes nothing for the
+checker, which gets no network. There is no DNS: the host resolver socket is
+not bound, so names do not resolve.
 
 bwrap runs the command in a nested user namespace, so it holds no
 capabilities over the network namespace (owned by pasta's user namespace) and
@@ -52,6 +54,8 @@ def _system_args() -> list[str]:
 
 def _endpoint(host: str, port: int | str) -> tuple[str, int]:
     addr = ipaddress.ip_address(host.strip().strip("[]"))  # an IP literal: nothing resolves names here
+    if getattr(addr, "scope_id", None):
+        raise ValueError(f"{host}: scoped IPv6 addresses are not allowed")
     port = int(port)
     if not 0 < port < 65536:
         raise ValueError(f"bad port {port}")
@@ -71,7 +75,8 @@ def allowlist(allow: Iterable[tuple[str, int]] = ()) -> list[tuple[str, int]]:
 
 def egress_ruleset(allow: Iterable[tuple[str, int]]) -> str:
     """nftables ruleset: loopback and TCP to each allowed endpoint; everything else is rejected at once."""
-    rules = ['oif "lo" accept']
+    rules = ['oif "lo" accept',
+             "icmpv6 type { nd-neighbor-solicit, nd-router-solicit, nd-neighbor-advert } accept"]
     for host, port in allow:
         family = "ip" if ipaddress.ip_address(host).version == 4 else "ip6"
         rules.append(f"{family} daddr {host} tcp dport {port} accept")
@@ -97,7 +102,7 @@ def sandbox_command(project: Path, home: Path, ro_binds: list[Path], argv: list[
                     rw_binds: list[Path] = (), allow: Iterable[tuple[str, int]] = ()) -> list[str]:
     """bwrap argv running `argv` in `cwd` (default: project); only project, home and rw_binds are writable.
 
-    Network egress is limited to TCP to the `allow` endpoints (ip, port) plus $ARTIFACTORY_SANDBOX_ALLOW.
+    Network egress is limited to TCP to exactly the `allow` endpoints (ip, port); the default is none.
     """
     project, home = Path(project).resolve(), Path(home).resolve()
     for tool, why in ((PASTA, "it isolates the sandbox network from host services"),
@@ -105,7 +110,7 @@ def sandbox_command(project: Path, home: Path, ro_binds: list[Path], argv: list[
         if not os.access(tool, os.X_OK):
             raise RuntimeError(f"{tool} not found; {why}")
     # Load the rules as root of pasta's namespaces, then exec bwrap; if nft fails, nothing runs.
-    firewall = ["/bin/sh", "-c", f'printf "%s" "$0" | {NFT} -f - && exec "$@"', egress_ruleset(allowlist(allow))]
+    firewall = ["/bin/sh", "-c", f'printf "%s" "$0" | {NFT} -f - && exec "$@"', egress_ruleset([_endpoint(h, p) for h, p in allow])]
     args = [PASTA, *PASTA_ARGS, "--", *firewall, BWRAP, "--die-with-parent", "--unshare-user", "--unshare-pid",
             "--unshare-ipc", "--unshare-uts", "--new-session", "--tmpfs", "/"]
     args += _system_args()
