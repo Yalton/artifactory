@@ -904,7 +904,7 @@ def test_export_failure_after_the_writing_phase_falls_back_to_the_brief(tmp_path
 # --- frontier writer workspace ----------------------------------------------
 
 @pytest.fixture(scope="module")
-def workspace(tmp_path_factory, cli):
+def _workspace(tmp_path_factory, cli):
     if not harness.BD_FALLBACK.is_file() and shutil.which("bd") is None:
         pytest.skip("bd is not installed")
     arc_src = Path(os.environ.get("ARC_SRC") or harness.DEFAULT_ARC_SRC)
@@ -913,7 +913,18 @@ def workspace(tmp_path_factory, cli):
     tmp = tmp_path_factory.mktemp("ws")
     mirrors = _product_mirrors(tmp, LANTERN.modules)
     arc = harness.build_arc(tmp / "arcbuild", arc_src)
-    trial, prefix = harness.prepare_roadmap_workspace(LANTERN, tmp / "ws", mirrors, cli, arc)
+    return harness.prepare_roadmap_workspace(LANTERN, tmp / "ws", mirrors, cli, arc)
+
+
+@pytest.fixture
+def workspace(_workspace):
+    """The shared workspace (building one costs ~8 s) with every bead deleted, so tests are order-independent."""
+    trial, prefix = _workspace
+    rows = json.loads(sh(prefix, "bd list --all --json", trial.project).stdout or "[]") or []
+    for row in rows:
+        r = sh(prefix, f"bd delete {row['id']} --force", trial.project)
+        assert r.returncode == 0, r.stderr
+    assert json.loads(sh(prefix, "bd list --all --json", trial.project).stdout or "[]") in ([], None)
     return trial, prefix
 
 
