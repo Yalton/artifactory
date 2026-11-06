@@ -69,7 +69,7 @@ The consumer pins every module to an exact tag or `==` version. A branch, a bare
 
 ## Descriptor fields
 
-`name` is the distribution name, for example `rate-limiter`. The import name is not a separate field. Give it in `entry`, as `rate_limiter.Limiter`, so the consumer sees both names. `test` is `pytest`.
+`name` is the distribution name, for example `rate-limiter`. The import name is not a separate field. Give it in `entry`, as `rate_limiter.Limiter`, so the consumer sees both names. `test` installs the module into a throwaway environment and runs its tests, since `artifactory publish` runs it in the source folder: `uv run --isolated --no-project --with . --with pytest pytest -q -p no:cacheprovider`.
 
 ## Liveness
 
