@@ -40,3 +40,18 @@ func Open(spec string) (Provider, error) {
 	}
 	return nil, fmt.Errorf("unknown provider scheme %q in %q", scheme, spec)
 }
+
+// HasTag reports whether repo has tag, reading past any cache so a publish
+// check is never stale. A missing repo has no tags.
+func HasTag(ctx context.Context, p Provider, repo, tag string) (bool, error) {
+	tags, err := Uncached(p).Tags(ctx, repo)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return false, err
+	}
+	for _, t := range tags {
+		if t == tag {
+			return true, nil
+		}
+	}
+	return false, nil
+}

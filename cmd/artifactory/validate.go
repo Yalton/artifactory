@@ -75,14 +75,12 @@ func runValidate(out *output, args []string) int {
 			r.TagCheck = "skipped"
 			if prov != nil {
 				r.TagCheck = "checked"
-				tags, err := prov.Tags(context.Background(), d.Name)
-				if err != nil && !errors.Is(err, provider.ErrNotFound) {
+				published, err := provider.HasTag(context.Background(), prov, d.Name, "v"+d.Version)
+				if err != nil {
 					return out.fail(exitUsage, err.Error())
 				}
-				for _, t := range tags {
-					if t == "v"+d.Version {
-						problems = append(problems, "v"+d.Version+" already published")
-					}
+				if published {
+					problems = append(problems, "v"+d.Version+" already published")
 				}
 			}
 		}
