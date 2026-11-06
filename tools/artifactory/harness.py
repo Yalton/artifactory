@@ -42,6 +42,7 @@ import yaml
 from .acceptance import AcceptanceTest, load_acceptance
 from .checks.go import go_env
 from .goproxy import build_goproxy
+from .pyindex import build_pyindex, download_wheels, index_env, standard_wheels, uv_binary
 from .result import CheckResult, TrialResult
 from .sandbox import allowlist, sandbox_command
 
@@ -152,6 +153,7 @@ class Trial:
     env: dict[str, str]
     ro_binds: list[Path]
     base_commit: str | None = None  # the fixture commit (arc mode), the checker's gate base
+    pyindex: Path | None = None  # the local wheel directory pip and uv install from (Python tests)
 
 
 # --- trial setup -----------------------------------------------------------
@@ -217,7 +219,7 @@ def _write_home(home: Path, mirrors: Path | None) -> None:
     (home / ".nuget" / "NuGet" / "NuGet.Config").write_text(_nuget_config())
 
 
-def _base_env(home: Path, bin_dir: Path, proxy: Path | None) -> dict[str, str]:
+def _base_env(home: Path, bin_dir: Path, proxy: Path | None, pyindex: Path | None = None) -> dict[str, str]:
     env = {
         "HOME": str(home),
         "USER": os.environ.get("USER", "trial"),
@@ -233,17 +235,33 @@ def _base_env(home: Path, bin_dir: Path, proxy: Path | None) -> dict[str, str]:
     if proxy is not None:
         genv = go_env(proxy, home / "go")
         env.update({k: genv[k] for k in GO_ENV_KEYS})
+    if pyindex is not None:
+        env.update(index_env(pyindex))
     return env
 
 
-def _tool_binds(mirrors: Path | None, proxy: Path | None, bin_dir: Path) -> list[Path]:
+def _tool_binds(mirrors: Path | None, proxy: Path | None, bin_dir: Path,
+                pyindex: Path | None = None) -> list[Path]:
     binds = [bin_dir, OPENCODE]
     if GODOT_BINARY.is_file():
         binds.append(GODOT_BINARY.parent)  # GodotSharp lives next to the binary
     if NUGET_PACKAGES.is_dir():
         binds.append(NUGET_PACKAGES)
-    binds += [p for p in (mirrors, proxy) if p is not None]
+    binds += [p for p in (mirrors, proxy, pyindex) if p is not None]
     return binds
+
+
+def _install_uv(dest: Path) -> None:
+    """Hard-link the host uv into the trial bin (copy across filesystems), then check that it runs."""
+    src = uv_binary()
+    try:
+        os.link(src, dest)
+    except OSError:
+        shutil.copy2(src, dest)
+    r = subprocess.run([str(dest), "--version"], capture_output=True, text=True)
+    if r.returncode != 0 or not r.stdout.startswith("uv "):
+        raise RuntimeError(f"uv installed at {dest} (from {src}) does not run: "
+                           f"{r.returncode}: {r.stderr.strip() or r.stdout.strip()}")
 
 
 def _run_tool(argv: list[str], env: dict[str, str], home: Path, cwd: Path | None = None) -> None:
@@ -309,14 +327,17 @@ def _product_setup(test: AcceptanceTest, cli: Path, project: Path, home: Path, b
 
 
 def prepare_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors: Path | None,
-                  proxy: Path | None, cli: Path | None = None, arc: Path | None = None, roadmap: str = "none") -> Trial:
+                  proxy: Path | None, cli: Path | None = None, arc: Path | None = None, roadmap: str = "none",
+                  pyindex: Path | None = None) -> Trial:
     """Create project (fixture + MODULES.md, committed), HOME and the godot launcher.
 
     With `cli` (product mode) the CLI is copied into the trial bin and writes MODULES.md itself.
     With `arc` (arc mode, needs `cli`) arc is installed in the project too.
     With `roadmap` frontier or ornith, bd is installed (metrics off, actor ornith) and initialised in
     the project; frontier also imports <test.dir>/roadmaps/frontier.jsonl. `workspace` (only for
-    prepare_roadmap_workspace) installs bd with actor roadmap-writer and imports nothing."""
+    prepare_roadmap_workspace) installs bd with actor roadmap-writer and imports nothing.
+    With `pyindex` (Python tests) uv is copied into the trial bin and pip and uv install only from that
+    wheel directory, bound read-only."""
     if arc is not None and cli is None:
         raise ValueError("--arc needs --product")
     trial_dir = Path(trial_dir).resolve()
@@ -324,13 +345,18 @@ def prepare_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors:
         raise FileExistsError(f"{trial_dir} already exists; remove it to rerun the trial")
     mirrors = Path(mirrors).resolve() if mirrors is not None else None
     proxy = Path(proxy).resolve() if proxy is not None else None
+    pyindex = Path(pyindex).resolve() if pyindex is not None else None
     project, home, bin_dir = trial_dir / "project", trial_dir / "home", trial_dir / "bin"
     trial_dir.mkdir(parents=True)
     shutil.copytree(test.fixture, project, symlinks=True)
     home.mkdir()
     _write_home(home, mirrors)
     bin_dir.mkdir()
-    env = _base_env(home, bin_dir, proxy)
+    if pyindex is not None and not pyindex.is_dir():
+        raise FileNotFoundError(f"Python wheel index {pyindex} does not exist; build it with build_pyindex")
+    env = _base_env(home, bin_dir, proxy, pyindex)
+    if pyindex is not None:
+        _install_uv(bin_dir / "uv")
     _git("init", "-q", "-b", "main", cwd=project)
     if cli is not None:
         _product_setup(test, Path(cli), project, home, bin_dir, mirrors, env, Path(arc) if arc else None)
@@ -354,7 +380,7 @@ def prepare_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors:
     launcher.write_text(f'#!/bin/sh\nexec "{GODOT_BINARY}" "$@"\n')
     launcher.chmod(0o755)
     return Trial(trial_dir, project, home, bin_dir, mirrors, proxy,
-                 env, _tool_binds(mirrors, proxy, bin_dir), base)
+                 env, _tool_binds(mirrors, proxy, bin_dir, pyindex), base, pyindex)
 
 
 def prepare_roadmap_workspace(test: AcceptanceTest, out_dir: Path, mirrors: Path, cli: Path, arc: Path) -> tuple[Trial, str]:
@@ -491,7 +517,7 @@ def checker_command(trial: Trial, test_dir: Path, ecosystem: str, fixture: Path,
         if trial.base_commit is not None:
             argv += ["--arc", "--arc-base", trial.base_commit]
     argv += ["-o", str(out)]
-    env = _base_env(check_home, trial.bin, None)
+    env = _base_env(check_home, trial.bin, None, trial.pyindex)
     env["PATH"] = f"{trial.bin}:/usr/local/bin:/usr/bin"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONPATH"] = str(REPO / "tools")
@@ -734,9 +760,9 @@ def trial_denials(trial_dir: Path) -> int:
 def run_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors: Path | None, proxy: Path | None,
               opencode_argv: list[str] | None = None, *, test_dir: Path | None = None,
               branch: str = STITCH_BRANCH, baseline: bool = False, cli: Path | None = None,
-              arc: Path | None = None, roadmap: str = "none") -> TrialResult:
+              arc: Path | None = None, roadmap: str = "none", pyindex: Path | None = None) -> TrialResult:
     """Set up the trial, run the agent sandboxed until done or time_limit_s, then check it sandboxed."""
-    trial = prepare_trial(test, index_md, trial_dir, mirrors, proxy, cli, arc, roadmap=roadmap)
+    trial = prepare_trial(test, index_md, trial_dir, mirrors, proxy, cli, arc, roadmap=roadmap, pyindex=pyindex)
     run = run_agent(trial, test, opencode_argv, roadmap)
     test_dir = Path(test_dir) if test_dir is not None else REPO / "tests" / "acceptance" / test.name
     result = run_checker(trial, test, test_dir, branch, baseline)
@@ -886,7 +912,7 @@ def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = F
             raise ValueError("--time-limit-s must be positive")
         test = replace(test, time_limit_s=time_limit_s)  # overrides test.yaml for this round only
     root = Path(results_root or RESULTS).resolve()
-    mirrors = proxy = cli = arc_bin = None
+    mirrors = proxy = cli = arc_bin = pyindex = None
     if roadmap not in ROADMAPS:
         raise ValueError(f"--roadmap must be one of {', '.join(ROADMAPS)}")
     if roadmap != "none":
@@ -926,6 +952,13 @@ def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = F
             index_md = ""  # the CLI renders MODULES.md in each trial
         else:
             index_md = render_index(build_cli(root), test.ecosystem, f"dir:{mirrors}", test.modules)
+        if test.ecosystem == "python":
+            pyindex = root / "pyindex" / test.name  # per test, so rounds of different tests keep their own
+            if pyindex.exists():
+                shutil.rmtree(pyindex)
+            with tempfile.TemporaryDirectory(prefix="pykits-") as tmp:
+                build_pyindex(export_kits(mirrors, test.modules, branch, Path(tmp)), pyindex)
+            download_wheels([*standard_wheels(), *test.python_wheels], pyindex)
 
     out = round_dir(root, test.name, round_no, baseline, roadmap)
     out.mkdir(parents=True, exist_ok=True)
@@ -935,11 +968,28 @@ def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = F
     for k in range(1, trials + 1):
         tr = run_trial(test, index_md, out / f"trial-{k}", mirrors, proxy, opencode_argv,
                        test_dir=test_dir, branch=branch, baseline=baseline, cli=cli, arc=arc_bin,
-                       roadmap=roadmap)
+                       roadmap=roadmap, pyindex=pyindex)
         result.results.append(tr)
         (out / "round.json").write_text(result.to_json())
     (out / "round.json").write_text(result.to_json())
     return result
+
+
+def export_kits(mirrors: Path, modules: list[str], branch: str, dest: Path) -> list[Path]:
+    """Check out `branch` of each kit mirror into dest/<module> (no .git); return the directories."""
+    dirs = []
+    for m in modules:
+        d = dest / m
+        d.mkdir(parents=True)
+        try:
+            archive = subprocess.run(["git", "--git-dir", str(mirrors / f"{m}.git"), "archive",
+                                      f"refs/heads/{branch}"], check=True, capture_output=True).stdout
+            subprocess.run(["tar", "-x", "-C", str(d)], input=archive, check=True, capture_output=True)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"cannot export kit {m} ({branch}) from {mirrors / (m + '.git')}: "
+                               f"{e.stderr.decode(errors='replace').strip()}") from e
+        dirs.append(d)
+    return dirs
 
 
 def round_dir(root: Path, test: str, round_no: int, baseline: bool, roadmap: str = "none") -> Path:
