@@ -17,20 +17,20 @@ Applies Stitchability Standard Draft 0.1.
 
 A module is a pip-installable package with a `pyproject.toml` (PEP 621 metadata, `src/` layout). The distribution name is the descriptor `name`: lowercase letters, digits and single hyphens. The import name is the package under `src/`, with underscores. The first released version is `0.1.0`, and `requires-python` is `>=3.11`.
 
-`module.yaml` and `README.md` stay at the project root and are also packed inside the import package. With hatchling:
+The build backend is `uv_build` (the `uv init` default). It packs everything under `src/<import_name>/`, so `module.yaml` and `README.md` stay real files at the project root and the package holds relative symlinks to them:
+
+```
+ln -s ../../module.yaml src/<import_name>/module.yaml
+ln -s ../../README.md src/<import_name>/README.md
+```
 
 ```toml
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/<import_name>"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"module.yaml" = "<import_name>/module.yaml"
-"README.md" = "<import_name>/README.md"
+requires = ["uv_build>=0.12,<0.13"]
+build-backend = "uv_build"
 ```
+
+With hatchling instead, use `[tool.hatch.build.targets.wheel.force-include]` mapping `"module.yaml" = "<import_name>/module.yaml"` and the same for `README.md`.
 
 A consumer reads them with `importlib.resources.files("<import_name>") / "module.yaml"`.
 
@@ -54,7 +54,7 @@ uv add "<name> @ git+ssh://git@repo.billbert.co/artifactory/<name>.git@v<version
 
 The descriptor `install` is this git line, for online use. Install into a virtual environment, never the system Python.
 
-When an index is configured (`PIP_INDEX_URL`, `UV_INDEX_URL`, `PIP_FIND_LINKS` or `UV_FIND_LINKS` is set), install from it and never from the git URL:
+When `PIP_FIND_LINKS` or `UV_FIND_LINKS` is set (offline use), install `<name>==<version>` and never use the git URL. Plain `pip install` and `uv add` read the setting from the environment:
 
 ```
 pip install "<name>==<version>"

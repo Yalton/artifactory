@@ -6,7 +6,7 @@ After installing, read each module's README before coding. Its Wiring section is
 .venv/bin/python -c "from importlib.resources import files; print(files('<import_name>').joinpath('README.md').read_text())"
 ```
 
-When an index is configured (`PIP_INDEX_URL`, `UV_INDEX_URL`, `PIP_FIND_LINKS` or `UV_FIND_LINKS` is set), install each module as `<name>==<version>` from it (`uv add` or `pip install`). Never use the git URL then.
+When `PIP_FIND_LINKS` or `UV_FIND_LINKS` is set (offline use), install each module as `<name>==<version>` with `uv add` or `pip install`. They read the setting from the environment. Never use the git URL then.
 
 ### Before finishing
 
@@ -17,7 +17,7 @@ uv venv --clear && uv pip install -r requirements.txt pytest
 uv pip check && .venv/bin/python -m pytest -q
 ```
 
-Add `.` to the install only if the app has a `pyproject.toml`. Then the index must also carry its build backend. With pip: `python -m venv .venv && .venv/bin/pip install -r requirements.txt pytest && .venv/bin/pip check`.
+Add `.` to the install only if the app has a `pyproject.toml`. Then the wheel directory must also carry its build backend (`uv_build` for a `uv init` project). With pip: `python -m venv .venv && .venv/bin/pip install -r requirements.txt pytest && .venv/bin/pip check`.
 
 Run the app from `.venv/bin/python`, not `uv run`, so nothing re-locks over the network. Unbuffered output keeps the markers when the app is killed. A server never exits on its own, so start it in the background, wait for `/healthz` to answer 200, then stop it:
 
