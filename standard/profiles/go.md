@@ -31,7 +31,18 @@ Go modules live as repositories in the Forgejo org `artifactory`, one repo per m
 go get repo.billbert.co/artifactory/<name>
 ```
 
-The org repos are private, so set `GOPRIVATE=repo.billbert.co` and let git reach Forgejo over SSH (`git config --global url."git@repo.billbert.co:".insteadOf "https://repo.billbert.co/"`).
+The org repos are private. Without credentials, `go get` fails with `could not read Username for 'https://repo.billbert.co': terminal prompts disabled`. Two setup steps fix it.
+
+1. Set `GOPRIVATE=repo.billbert.co`. This skips the public proxy and checksum database.
+2. Give git credentials for `repo.billbert.co`. SSH is preferred:
+
+```
+git config --global url."git@repo.billbert.co:".insteadOf "https://repo.billbert.co/"
+```
+
+For one command, use `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0='url.git@repo.billbert.co:.insteadOf' GIT_CONFIG_VALUE_0='https://repo.billbert.co/'`.
+
+Over https instead, put a token in `~/.netrc` (`machine repo.billbert.co login <user> password <token>`).
 
 ## Liveness
 
