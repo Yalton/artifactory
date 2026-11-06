@@ -68,3 +68,21 @@ func TestCorruptFile(t *testing.T) {
 		t.Fatal("want error")
 	}
 }
+
+func TestNullFileIsEmptyStore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "d.json")
+	if err := writeFile(path, "null"); err != nil {
+		t.Fatal(err)
+	}
+	s, err := kvstore.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if added, err := s.PutIfAbsent("a", "1"); !added || err != nil {
+		t.Fatalf("put: %v %v", added, err)
+	}
+	if v, ok, _ := s.Get("a"); !ok || v != "1" {
+		t.Fatalf("got %q %v", v, ok)
+	}
+}
