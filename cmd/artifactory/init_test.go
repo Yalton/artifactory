@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,5 +50,48 @@ func TestInitRefusesExistingProjectFile(t *testing.T) {
 func TestSkillIsShort(t *testing.T) {
 	if n := strings.Count(skill.Text(), "\n"); n >= 60 {
 		t.Errorf("SKILL.md has %d lines, want under 60", n)
+	}
+}
+
+func TestInitSkillFailureLeavesInitRerunnable(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module x\n"), 0o644)
+	os.MkdirAll(filepath.Join(dir, ".claude"), 0o755)
+	// A file where the skills folder belongs makes the skill write fail.
+	os.WriteFile(filepath.Join(dir, ".claude", "skills"), nil, 0o644)
+	code, _, _ := runCmd("init", "--project", dir, "--provider", "dir:"+kitsDir(t))
+	if code == 0 {
+		t.Fatal("init succeeded despite a blocked skill write")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "artifactory.yaml")); err == nil {
+		t.Fatal("artifactory.yaml written despite skill failure")
+	}
+	os.Remove(filepath.Join(dir, ".claude", "skills"))
+	if code, _, se := runCmd("init", "--project", dir, "--provider", "dir:"+kitsDir(t)); code != 0 {
+		t.Fatalf("re-run init: %d %s", code, se)
+	}
+}
+
+func TestInitJSONListsSkillPaths(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module x\n"), 0o644)
+	os.Mkdir(filepath.Join(dir, ".agents"), 0o755)
+	code, so, se := runCmd("init", "--json", "--project", dir, "--provider", "dir:"+kitsDir(t))
+	if code != 0 {
+		t.Fatalf("init: %d %s", code, se)
+	}
+	var got struct {
+		Written []string `json:"written"`
+		Skills  []string `json:"skills"`
+	}
+	if err := json.Unmarshal([]byte(so), &got); err != nil {
+		t.Fatalf("stdout is not one JSON value: %v\n%s", err, so)
+	}
+	want := filepath.Join(dir, ".agents", "skills", "artifactory", "SKILL.md")
+	if len(got.Skills) != 1 || got.Skills[0] != want {
+		t.Errorf("skills = %v, want [%s]", got.Skills, want)
+	}
+	if len(got.Written) == 0 {
+		t.Errorf("written is empty")
 	}
 }

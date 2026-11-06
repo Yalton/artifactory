@@ -25,7 +25,7 @@ func splitArgs(args []string) (names, flags []string) {
 	return args[:i], args[i:]
 }
 
-// runInit creates artifactory.yaml, then writes the index.
+// runInit writes the skill copies and artifactory.yaml, then the index.
 func runInit(out *output, args []string) int {
 	const use = "usage: artifactory init [--ecosystem E] [--provider SPEC] [--project DIR]"
 	fs := newFlags("init")
@@ -48,11 +48,13 @@ func runInit(out *output, args []string) int {
 	if !contains(descriptor.Ecosystems, *eco) {
 		return out.fail(exitUsage, "ecosystem must be one of "+strings.Join(descriptor.Ecosystems, ", "))
 	}
-	if err := project.Save(*dir, project.File{Ecosystem: *eco, Provider: *spec}); err != nil {
-		return out.fail(exitUsage, err.Error())
-	}
+	// Skills go first: artifactory.yaml blocks a second init, so a skill
+	// write failure must leave nothing behind that stops a re-run.
 	paths, err := writeSkills(*dir)
 	if err != nil {
+		return out.fail(exitUsage, err.Error())
+	}
+	if err := project.Save(*dir, project.File{Ecosystem: *eco, Provider: *spec}); err != nil {
 		return out.fail(exitUsage, err.Error())
 	}
 	if !out.json {
@@ -60,7 +62,22 @@ func runInit(out *output, args []string) int {
 			fmt.Fprintln(out.stdout, "wrote "+p)
 		}
 	}
-	return writeIndex(out, *dir, false, app.ArcAuto)
+	res, err := app.App{Refresh: refreshCache}.Index(context.Background(), *dir, false, app.ArcAuto)
+	if err != nil {
+		return out.fail(app.Code(err), err.Error())
+	}
+	if paths == nil {
+		paths = []string{}
+	}
+	printIndexAs(out, res, initResult{IndexResult: res, Skills: paths})
+	return exitOK
+}
+
+// initResult is the --json shape of init: the index result plus the skill
+// copies init wrote.
+type initResult struct {
+	app.IndexResult
+	Skills []string `json:"skills"`
 }
 
 // skillHarnessDirs are the agent harness folders that receive the skill.
@@ -154,7 +171,10 @@ func writeIndex(out *output, dir string, modulesOnly bool, arcMode string) int {
 	return exitOK
 }
 
-func printIndex(out *output, res app.IndexResult) {
+func printIndex(out *output, res app.IndexResult) { printIndexAs(out, res, res) }
+
+// printIndexAs prints res's warnings and text, and v as the --json value.
+func printIndexAs(out *output, res app.IndexResult, v any) {
 	if res.Warning != "" && !out.json {
 		fmt.Fprintln(out.stderr, "artifactory: warning: "+res.Warning)
 	}
@@ -163,7 +183,7 @@ func printIndex(out *output, res app.IndexResult) {
 			fmt.Fprintln(out.stderr, "artifactory: warning: "+w)
 		}
 	}
-	out.result("wrote "+strings.Join(res.Written, ", "), res)
+	out.result("wrote "+strings.Join(res.Written, ", "), v)
 }
 
 func loadProjectMsg(err error) string { return app.LoadProjectMsg(err) }

@@ -22,6 +22,10 @@ var forgejoBaseURL = func(host string) string { return "https://" + host + "/api
 
 const forgejoPageSize = 50
 
+// forgejoMaxPages caps list paging so a server that never returns an empty
+// page cannot loop forever. Tests lower it.
+var forgejoMaxPages = 200
+
 // forgejoProvider keeps one repo per module in a Forgejo organization.
 type forgejoProvider struct {
 	host, org string
@@ -105,6 +109,9 @@ func (f *forgejoProvider) do(ctx context.Context, method, path string, body any)
 func (f *forgejoProvider) names(ctx context.Context, path string) ([]string, error) {
 	var out []string
 	for page := 1; ; page++ {
+		if page > forgejoMaxPages {
+			return nil, fmt.Errorf("forgejo %s: more than %d pages of %d; stopped paging", path, forgejoMaxPages, forgejoPageSize)
+		}
 		status, b, err := f.do(ctx, "GET", fmt.Sprintf("%s?page=%d&limit=%d", path, page, forgejoPageSize), nil)
 		if err != nil {
 			return nil, err

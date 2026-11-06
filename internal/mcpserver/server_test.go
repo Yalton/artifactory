@@ -156,3 +156,26 @@ func TestInstallToolPartialFailureNamesInstalled(t *testing.T) {
 		t.Errorf("MODULES.md:\n%s", md)
 	}
 }
+
+func TestMCPRejectsEmptyArguments(t *testing.T) {
+	cs := connect(t, newProject(t))
+	cases := []struct {
+		tool string
+		args map[string]any
+		want string
+	}{
+		{"search", map[string]any{"query": "  "}, "query is empty"},
+		{"show", map[string]any{"name": ""}, "name is empty"},
+		{"install", map[string]any{"names": []string{}}, "names is empty"},
+		{"install", map[string]any{"names": []string{"AKit", " "}}, "empty name"},
+	}
+	for _, c := range cases {
+		res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: c.tool, Arguments: c.args})
+		if err != nil {
+			t.Fatalf("%s %v: protocol error %v", c.tool, c.args, err)
+		}
+		if !res.IsError || !strings.Contains(text(t, res), c.want) {
+			t.Errorf("%s %v: isError=%v text=%q, want %q", c.tool, c.args, res.IsError, text(t, res), c.want)
+		}
+	}
+}

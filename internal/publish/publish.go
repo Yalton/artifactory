@@ -5,7 +5,6 @@ package publish
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -59,15 +58,12 @@ func Publish(ctx context.Context, dir string, p provider.Provider, opts Options,
 		return Result{}, &CheckError{fmt.Sprintf("name %q is not a plain repo name (letters, digits, . _ -; not ending in .git)", d.Name)}
 	}
 	tag := "v" + d.Version
-	// Read tags past any cache so the check is never stale.
-	tags, err := provider.Uncached(p).Tags(ctx, d.Name)
-	if err != nil && !errors.Is(err, provider.ErrNotFound) {
+	published, err := provider.HasTag(ctx, p, d.Name, tag)
+	if err != nil {
 		return Result{}, err
 	}
-	for _, t := range tags {
-		if t == tag {
-			return Result{}, &CheckError{tag + " already published; bump version in module.yaml"}
-		}
+	if published {
+		return Result{}, &CheckError{tag + " already published; bump version in module.yaml"}
 	}
 
 	absDir, err := filepath.Abs(dir)
