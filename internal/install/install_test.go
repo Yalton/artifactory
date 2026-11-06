@@ -275,3 +275,17 @@ func TestRunFailure(t *testing.T) {
 		t.Error("want error from failing install line")
 	}
 }
+
+func TestPythonUnsupported(t *testing.T) {
+	m := catalog.Module{Descriptor: descriptor.Descriptor{Name: "foo", Ecosystem: descriptor.Python, Install: "touch should-not-exist"}}
+	dir := t.TempDir()
+	if _, err := Run(context.Background(), dir, m); err != ErrPythonUnsupported {
+		t.Errorf("Run err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "should-not-exist")); err == nil {
+		t.Error("install line ran for a python module")
+	}
+	if _, err := Locate(dir, m); err != ErrPythonUnsupported {
+		t.Errorf("Locate err = %v", err)
+	}
+}

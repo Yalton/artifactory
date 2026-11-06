@@ -318,6 +318,9 @@ func moduleFor(e project.Entry, local install.Lookup, mods []catalog.Module) (m 
 // Godot modules own addons/<Name>; go modules are imported by path.
 func arcEntry(m catalog.Module) (arcreg.Entry, error) {
 	d := m.Descriptor
+	if d.Ecosystem == descriptor.Python {
+		return arcreg.Entry{}, install.ErrPythonUnsupported
+	}
 	e := arcreg.Entry{ID: m.Name, Summary: d.Summary, Covers: d.Replaces, Entry: d.Entry}
 	if d.Ecosystem == descriptor.GodotCSharp {
 		e.Paths = []string{"addons/" + m.Name + "/**"}

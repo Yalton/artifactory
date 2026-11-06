@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -16,13 +17,19 @@ import (
 // GodotCSharp is the godot-csharp ecosystem name.
 const GodotCSharp = "godot-csharp"
 
+// Python is the python ecosystem name.
+const Python = "python"
+
 // Ecosystems lists the supported module ecosystems.
-var Ecosystems = []string{GodotCSharp, "go"}
+var Ecosystems = []string{GodotCSharp, "go", Python}
 
 var strFields = []string{"name", "ecosystem", "version", "summary", "install", "liveness", "docs", "example", "test"}
 var listFields = []string{"replaces", "setup", "entry"}
 
 var godotLiveness = regexp.MustCompile(`^\[\w+\] live$`)
+
+// pythonLiveness allows hyphens because distribution names have them.
+var pythonLiveness = regexp.MustCompile(`^\[[\w-]+\] live$`)
 
 // Descriptor is the parsed content of a module.yaml.
 type Descriptor struct {
@@ -133,7 +140,7 @@ func Parse(data []byte, folder string) (Descriptor, []string) {
 	}
 
 	eco, hasEco := strs["ecosystem"]
-	if hasEco && eco != "go" && eco != GodotCSharp {
+	if hasEco && !slices.Contains(Ecosystems, eco) {
 		problems = append(problems, "ecosystem: must be one of "+strings.Join(Ecosystems, ", "))
 	}
 	if s, ok := strs["summary"]; ok && (strings.Contains(s, "\n") || utf8.RuneCountInString(s) >= 100) {
@@ -156,6 +163,11 @@ func Parse(data []byte, folder string) (Descriptor, []string) {
 		}
 		if l, ok := strs["liveness"]; ok && !godotLiveness.MatchString(l) {
 			problems = append(problems, "liveness: godot-csharp value must be the exact marker line, like '[FooKit] live'")
+		}
+	}
+	if eco == Python {
+		if l, ok := strs["liveness"]; ok && !pythonLiveness.MatchString(l) {
+			problems = append(problems, "liveness: python value must be the exact marker line, like '[foo-bar] live'")
 		}
 	}
 	if len(problems) > 0 {
