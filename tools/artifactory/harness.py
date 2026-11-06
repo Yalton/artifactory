@@ -71,6 +71,7 @@ TRIAL_NAME = "Artifactory Trial"
 TRIAL_EMAIL = "trial@artifactory.invalid"
 CHECKER_TIMEOUT_S = 3600
 PASS_BAR = 4
+BAR_TRIALS = 5  # the bar is 4 of 5; a round with fewer trials reports pass counts without a verdict
 # A dropped model connection is the server's fault, not the model's: resume the
 # session up to MAX_RESUMES times, pausing first so the server can recover.
 MAX_RESUMES = 3
@@ -111,7 +112,10 @@ class RoundResult:
         return sum(r.passed for r in self.results)
 
     @property
-    def met_bar(self) -> bool:
+    def met_bar(self) -> bool | None:
+        """None when the round has fewer than BAR_TRIALS trials: the 4-of-5 bar does not apply."""
+        if len(self.results) < BAR_TRIALS:
+            return None
         return self.passes >= PASS_BAR
 
     @property

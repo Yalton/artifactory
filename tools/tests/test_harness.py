@@ -184,6 +184,13 @@ def test_round_bar_is_four_of_five():
     assert not RoundResult("t", 1, [_trial(True, k) for k in range(3)] + [timed_out]).met_bar
 
 
+def test_bar_does_not_apply_below_five_trials():
+    three = RoundResult("t", 1, [_trial(True, k) for k in range(3)])
+    assert three.passes == 3 and three.met_bar is None
+    assert json.loads(three.to_json())["met_bar"] is None
+    assert RoundResult("t", 1, [_trial(True, k) for k in range(4)]).met_bar is None
+
+
 def test_every_kit_url_form_resolves_to_mirrors(tmp_path):
     cfg = tmp_path / "gitconfig"
     cfg.write_text(harness._gitconfig(tmp_path / "mirrors"))
