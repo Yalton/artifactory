@@ -182,7 +182,7 @@
 - Consumes: `catalog.Module`.
 - Produces:
   - `search.Hit{Module catalog.Module; Score float64}` (json: `name`, `summary`, `install`, `score`).
-  - `search.Rank(mods []catalog.Module, query []string, eco string) []search.Hit`. It is case-insensitive, drops hits below a threshold the builder chooses, sorts by score descending and then by name, and limits results to `eco` when that is non-empty. Weights are the builder's choice, but `name` and `replaces` must outweigh `summary`, and `summary` must outweigh `entry`.
+  - `search.Rank(mods []catalog.Module, query []string, eco string) []search.Hit`. It is case-insensitive, drops hits below a threshold the builder chooses, sorts by score descending and then by name, and limits results to `eco` when that is non-empty. Weights are the builder's choice, but `name` must outweigh `summary`, `summary` must outweigh `replaces`, and `replaces` must outweigh `entry`. (Amended 2026-11-06: `replaces` used to share the top weight, which let generic words such as "saving" or "loading" in passing outrank the module built for the need. Rank now compares stems, splits CamelCase names, and keeps a module that matches only some query words (at least a third) only when one of them is in its name, or is in its `replaces` list and no other module matches it; see `internal/search/search.go`.)
   - `artifactory search WORDS... [--ecosystem E] [--provider SPEC]`. With hits it prints `name  score  summary` and an `install:` line per hit. With none it prints `no module matches "<words>"; record this as a gap` and exits 0.
 
 - [ ] **Step 1: Write the failing tests**, using `internal/testdata/kits` plus `samples/go` as a `dir:` catalog each (a plain folder with `module.yaml` counts as a module, Task 2).
