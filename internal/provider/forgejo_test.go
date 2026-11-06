@@ -169,3 +169,21 @@ func TestTokenFromTeaConfig(t *testing.T) {
 		t.Errorf("env token = %q", got)
 	}
 }
+
+func TestForgejoPagingStopsAtCap(t *testing.T) {
+	old := forgejoMaxPages
+	forgejoMaxPages = 3
+	t.Cleanup(func() { forgejoMaxPages = old })
+	calls := 0
+	p := useServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		json.NewEncoder(w).Encode([]map[string]string{{"name": "same"}})
+	}))
+	_, err := p.List(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "more than 3 pages") {
+		t.Fatalf("err = %v, want a page cap error", err)
+	}
+	if calls != 3 {
+		t.Errorf("server saw %d requests, want 3", calls)
+	}
+}
