@@ -153,7 +153,10 @@ type IndexResult struct {
 	Arc bool `json:"arc"`
 	// Warning is set when a registry exists but arc cannot be used.
 	Warning string `json:"warning,omitempty"`
-	// Warnings lists arc registration failures; the index itself succeeded.
+	// Warnings lists installed modules indexed from the catalog instead of
+	// their installed copy (and why), installed copies whose version differs
+	// from artifactory.yaml, and arc registration failures. The index itself
+	// succeeded.
 	Warnings []string `json:"warnings,omitempty"`
 }
 
@@ -185,6 +188,11 @@ func resolveArc(dir, mode string) (bool, string, error) {
 }
 
 // Index rewrites MODULES.md and, unless modulesOnly, the AGENTS.md block.
+// Each installed module is described by its installed copy's module.yaml
+// (see install.Installed and moduleFor); in-scope modules not installed, and
+// installed ones whose copy cannot be found or used, come from the catalog's
+// latest tag, the latter with a warning. The provider is opened only when
+// some module needs the catalog.
 // arcMode is auto, on or off (empty means auto). A full index shows each
 // module's install command as `artifactory install NAME`; modulesOnly keeps
 // the raw install line.
@@ -201,38 +209,55 @@ func (a App) Index(ctx context.Context, dir string, modulesOnly bool, arcMode st
 	var ds []descriptor.Descriptor
 	var reg []arcreg.Entry
 	var skipped []string
-	if len(f.Modules) > 0 {
+	// Installed modules render from their installed module.yaml; the catalog
+	// is loaded only for the rest, so a fully installed project needs no
+	// provider. Every fallback to the catalog for an installed module warns.
+	var notes []string
+	var installed []string
+	for _, e := range f.Modules {
+		if e.Version != "" {
+			installed = append(installed, e.Name)
+		}
+	}
+	local, err := install.Installed(ctx, dir, f.Ecosystem, installed)
+	if err != nil {
+		notes = append(notes, "installed copies not read, using the catalog for all modules: "+err.Error())
+	}
+	var mods []catalog.Module
+	if len(local.Found) < len(f.Modules) {
 		p, err := a.ResolveProvider("", dir)
 		if err != nil {
 			return IndexResult{}, usageErr(err)
 		}
-		mods, _, err := catalog.Load(ctx, p)
-		if err != nil {
+		if mods, _, err = catalog.Load(ctx, p); err != nil {
 			return IndexResult{}, usageErr(err)
 		}
-		for _, e := range f.Modules {
-			m, ok := catalog.Find(mods, e.Name)
-			if !ok {
-				return IndexResult{}, problemErr("module " + e.Name + " is in scope but not in the catalog")
+	}
+	for _, e := range f.Modules {
+		m, ok, note := moduleFor(e, local, mods)
+		if note != "" {
+			notes = append(notes, note)
+		}
+		if !ok {
+			return IndexResult{}, problemErr("module " + e.Name + " is in scope but not in the catalog")
+		}
+		ds = append(ds, m.Descriptor)
+		if e.Version != "" {
+			ae, err := arcEntry(m)
+			if err != nil {
+				skipped = append(skipped, "arc: "+m.Name+" not registered: "+err.Error())
+				reg = append(reg, arcreg.Entry{ID: m.Name, Keep: true})
+				continue
 			}
-			ds = append(ds, m.Descriptor)
-			if e.Version != "" {
-				ae, err := arcEntry(m)
-				if err != nil {
-					skipped = append(skipped, "arc: "+m.Name+" not registered: "+err.Error())
-					reg = append(reg, arcreg.Entry{ID: m.Name, Keep: true})
-					continue
-				}
-				reg = append(reg, ae)
-			}
+			reg = append(reg, ae)
 		}
 	}
-	var warnings []string
+	warnings := notes
 	if arc {
 		// Register first: arc's own rendered guidance exists only once its
 		// registry holds a module, so the preamble drops its bullets then.
 		n, w := arcreg.SyncCount(dir, reg)
-		warnings = append(skipped, w...)
+		warnings = append(append(warnings, skipped...), w...)
 		opt.Arc = n > 0
 	}
 	written := []string{"MODULES.md"}
@@ -246,6 +271,47 @@ func (a App) Index(ctx context.Context, dir string, modulesOnly bool, arcMode st
 		written = append(written, "AGENTS.md")
 	}
 	return IndexResult{Written: written, Modules: len(ds), Arc: opt.Arc, Warning: warn, Warnings: warnings}, nil
+}
+
+// moduleFor picks the descriptor for project entry e: its installed copy when
+// local has exactly one (or, for a go name several dependencies carry, the
+// one whose module path the catalog's install line names), else the catalog's
+// latest. note is a warning for the index result, set when an installed
+// module falls back to the catalog or its copy's version differs from the
+// recorded one.
+func moduleFor(e project.Entry, local install.Lookup, mods []catalog.Module) (m catalog.Module, ok bool, note string) {
+	cat, inCat := catalog.Find(mods, e.Name)
+	c, have := local.Found[e.Name]
+	if cs := local.Ambiguous[e.Name]; len(cs) > 0 {
+		var paths []string
+		for _, x := range cs {
+			paths = append(paths, x.Path)
+		}
+		want := ""
+		if inCat {
+			want, _ = install.GoModulePath(cat.Install)
+		}
+		for _, x := range cs {
+			if want != "" && x.Path == want {
+				c, have = x, true
+			}
+		}
+		if !have {
+			note = fmt.Sprintf("%s: installed copy not used, using the catalog: module.yaml named %s is in %d dependencies (%s) and the catalog names none of them",
+				e.Name, e.Name, len(cs), strings.Join(paths, ", "))
+		}
+	}
+	if why, bad := local.Problems[e.Name]; bad && !have {
+		note = e.Name + ": installed copy not used, using the catalog: " + why
+	}
+	if !have {
+		return cat, inCat, note
+	}
+	if strings.TrimPrefix(c.Descriptor.Version, "v") != strings.TrimPrefix(e.Version, "v") {
+		note = fmt.Sprintf("%s: installed copy is version %s but %s records %s; indexing the installed copy",
+			e.Name, c.Descriptor.Version, project.FileName, e.Version)
+	}
+	return catalog.Module{Descriptor: c.Descriptor}, true, note
 }
 
 // arcEntry maps an installed module's descriptor to its arc registry entry.
