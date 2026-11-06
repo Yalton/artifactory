@@ -184,6 +184,13 @@ def test_round_bar_is_four_of_five():
     assert not RoundResult("t", 1, [_trial(True, k) for k in range(3)] + [timed_out]).met_bar
 
 
+def test_bar_does_not_apply_below_five_trials():
+    three = RoundResult("t", 1, [_trial(True, k) for k in range(3)])
+    assert three.passes == 3 and three.met_bar is None
+    assert json.loads(three.to_json())["met_bar"] is None
+    assert RoundResult("t", 1, [_trial(True, k) for k in range(4)]).met_bar is None
+
+
 def test_every_kit_url_form_resolves_to_mirrors(tmp_path):
     cfg = tmp_path / "gitconfig"
     cfg.write_text(harness._gitconfig(tmp_path / "mirrors"))
@@ -854,6 +861,31 @@ def test_bead_loop_failures_beyond_runtime_error_are_recorded_as_bd_error(tmp_pa
     assert out.bd_error == str(exc) and out.beads == 0
 
 
+def test_final_export_is_attempted_after_a_bd_error(tmp_path, monkeypatch):
+    trial = prepare_trial(GO_TEST, "# index", tmp_path / "trial-1", None, None)
+    def boom(*a, **k):
+        raise RuntimeError("bd broke")
+    monkeypatch.setattr(harness, "bead_loop", boom)
+    monkeypatch.setattr(harness, "_export", lambda trial, dest: [{"status": "closed"}, {"status": "open"}])
+    test = dataclasses.replace(LANTERN, time_limit_s=30)
+    out = harness.run_agent(trial, test, fake_agent("true"), "frontier").outcome
+    assert out.bd_error == "bd broke" and out.export_error is None
+    assert (out.beads, out.closed) == (2, 1)
+
+
+def test_failed_final_export_does_not_mask_the_bd_error(tmp_path, monkeypatch):
+    trial = prepare_trial(GO_TEST, "# index", tmp_path / "trial-1", None, None)
+    def boom(*a, **k):
+        raise RuntimeError("bd broke")
+    def no_export(trial, dest):
+        raise RuntimeError("export broke")
+    monkeypatch.setattr(harness, "bead_loop", boom)
+    monkeypatch.setattr(harness, "_export", no_export)
+    test = dataclasses.replace(LANTERN, time_limit_s=30)
+    out = harness.run_agent(trial, test, fake_agent("true"), "frontier").outcome
+    assert out.bd_error == "bd broke" and out.export_error == "export broke" and out.beads == 0
+
+
 def test_export_failure_after_the_writing_phase_falls_back_to_the_brief(tmp_path, monkeypatch):
     trial = prepare_trial(GO_TEST, "# index", tmp_path / "trial-1", None, None)
     calls = []
@@ -872,7 +904,7 @@ def test_export_failure_after_the_writing_phase_falls_back_to_the_brief(tmp_path
 # --- frontier writer workspace ----------------------------------------------
 
 @pytest.fixture(scope="module")
-def workspace(tmp_path_factory, cli):
+def _workspace(tmp_path_factory, cli):
     if not harness.BD_FALLBACK.is_file() and shutil.which("bd") is None:
         pytest.skip("bd is not installed")
     arc_src = Path(os.environ.get("ARC_SRC") or harness.DEFAULT_ARC_SRC)
@@ -881,7 +913,18 @@ def workspace(tmp_path_factory, cli):
     tmp = tmp_path_factory.mktemp("ws")
     mirrors = _product_mirrors(tmp, LANTERN.modules)
     arc = harness.build_arc(tmp / "arcbuild", arc_src)
-    trial, prefix = harness.prepare_roadmap_workspace(LANTERN, tmp / "ws", mirrors, cli, arc)
+    return harness.prepare_roadmap_workspace(LANTERN, tmp / "ws", mirrors, cli, arc)
+
+
+@pytest.fixture
+def workspace(_workspace):
+    """The shared workspace (building one costs ~8 s) with every bead deleted, so tests are order-independent."""
+    trial, prefix = _workspace
+    rows = json.loads(sh(prefix, "bd list --all --json", trial.project).stdout or "[]") or []
+    for row in rows:
+        r = sh(prefix, f"bd delete {row['id']} --force", trial.project)
+        assert r.returncode == 0, r.stderr
+    assert json.loads(sh(prefix, "bd list --all --json", trial.project).stdout or "[]") in ([], None)
     return trial, prefix
 
 

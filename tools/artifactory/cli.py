@@ -41,7 +41,8 @@ def cmd_round(args) -> int:
         print(f"artifactory round: {e}", file=sys.stderr)
         return 1
     print(f"{result.test} {'baseline' if args.baseline else f'round {result.round}'}: "
-          f"{result.passes}/{len(result.results)} passed; bar {'met' if result.met_bar else 'not met'}"
+          f"{result.passes}/{len(result.results)} passed"
+          + ("" if result.met_bar is None else f"; bar {'met' if result.met_bar else 'not met'}")
           + (f"; {result.infrastructure_failures} infrastructure failures" if result.infrastructure_failures else ""))
     return 0
 
