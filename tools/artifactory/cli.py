@@ -33,9 +33,13 @@ def cmd_check(args) -> int:
 def cmd_round(args) -> int:
     from .harness import run_round
 
-    result = run_round(Path(args.test_dir), args.round, trials=args.trials, baseline=args.baseline,
-                       product=args.product, arc=args.arc, arc_src=args.arc_src, roadmap=args.roadmap,
-                       time_limit_s=args.time_limit_s)
+    try:
+        result = run_round(Path(args.test_dir), args.round, trials=args.trials, baseline=args.baseline,
+                           product=args.product, arc=args.arc, arc_src=args.arc_src, roadmap=args.roadmap,
+                           time_limit_s=args.time_limit_s)
+    except ValueError as e:
+        print(f"artifactory round: {e}", file=sys.stderr)
+        return 1
     print(f"{result.test} {'baseline' if args.baseline else f'round {result.round}'}: "
           f"{result.passes}/{len(result.results)} passed; bar {'met' if result.met_bar else 'not met'}"
           + (f"; {result.infrastructure_failures} infrastructure failures" if result.infrastructure_failures else ""))
