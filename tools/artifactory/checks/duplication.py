@@ -10,15 +10,21 @@ from artifactory.result import CheckResult
 MAX_LISTED = 10
 
 
-def check_duplication(project: Path, files: Iterable[Path], duplication: dict[str, list[str]]) -> CheckResult:
-    """Match every line of `files` (the project's own code, under `project`) against each module's patterns."""
+def check_duplication(project: Path, files: Iterable[Path], duplication: dict[str, list[str]],
+                      strict: bool = True) -> CheckResult:
+    """Match every line of `files` (the project's own code, under `project`) against each module's patterns.
+
+    strict: an unreadable file raises (the Go checker's behaviour). Otherwise it fails the check."""
     compiled = {name: [re.compile(p) for p in pats] for name, pats in duplication.items()}
     hits = []
     for file in sorted(files):
         rel = file.relative_to(project).as_posix()
         try:
             lines = file.read_text(errors="replace").splitlines()
-        except OSError:
+        except OSError as e:
+            if strict:
+                raise
+            hits.append(f"{rel} unreadable ({type(e).__name__})")
             continue
         for lineno, line in enumerate(lines, 1):
             for name, regexes in compiled.items():

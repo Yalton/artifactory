@@ -4,10 +4,17 @@ Everything runs on a copy of the project; the input is never modified. The
 checker builds its own clean virtual environment from the project's pins, with
 uv, offline, from the trial's wheel index only (no PyPI, a throwaway uv cache).
 The spec is standard/profiles/python.md and standard/consumer/python.md.
+
+Isolation comes from the harness, which runs this inside the checker sandbox:
+its network namespace has no egress (so nothing the project runs can reach
+PyPI or elsewhere), and its PID namespace takes every process the app or its
+tests spawned with it. Run on a bare host, the checker kills the app's process
+group only, and the app and tests have the host's network.
 """
 from __future__ import annotations
 
 import base64
+import dataclasses
 import csv
 import hashlib
 import http.client
@@ -21,6 +28,7 @@ import subprocess
 import tempfile
 import time
 import tomllib
+import zipfile
 from pathlib import Path
 
 from artifactory.acceptance import AcceptanceTest
@@ -37,8 +45,8 @@ SETTLE_S = 0.5  # after /healthz answers, so output printed right after start re
 STOP_TIMEOUT_S = 5
 REQUEST_TIMEOUT_S = 5
 MAX_LISTED = 10
-# Directories that are never the project's own code.
-SKIP_DIRS = {"__pycache__", "node_modules", "site-packages", "tests", "test"}
+# Directories that are never the project's own code (besides virtual environments and dot directories).
+SKIP_DIRS = {"__pycache__", "node_modules", "site-packages"}
 # Variables that would point the checker's tools or interpreters elsewhere.
 _DROP_ENV = ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE", "VIRTUAL_ENV", "CONDA_PREFIX")
 
@@ -59,16 +67,17 @@ def check_python(project: Path, test: AcceptanceTest, index: Path) -> TrialResul
         venv = tmp / "venv"
 
         pinned = _check_pinned(copy, test.modules)
-        duplication = check_duplication(copy, _project_code_files(copy), test.duplication)
+        duplication = check_duplication(copy, _project_code_files(copy), test.duplication, strict=False)
         install = _check_install(copy, venv, index, env, logs, tmp)
         if install.passed:
             python = venv / "bin" / "python"
             pip_check = _check_pip(python, copy, env, logs)
             tests = _check_tests(python, copy, env, logs)
-            app, log_text = _check_app(python, copy, test, env, logs)
-            live = _check_live(log_text, test.modules)
-            traceback = _check_traceback(log_text)
-            installed = _check_installed(venv, test.modules)
+            app_run = _check_app(python, copy, test, env, logs)
+            app = app_run.result
+            live = _check_live(app_run, copy, venv, test.modules)
+            traceback = _check_traceback(app_run.log)
+            installed = _check_installed(venv, test.modules, index)
             unmodified = _check_unmodified(python, copy, venv, test.modules, env, logs)
         else:
             skipped = "not run: install failed"
@@ -113,6 +122,28 @@ def _listed(problems: list[str]) -> str:
 
 # --- static checks ---------------------------------------------------------
 
+_HASH_OPT = re.compile(r"\s--hash[=\s]\S+")
+# Options that are allowed in requirements.txt; any other option line (-f/--find-links, -i/--index-url,
+# --extra-index-url, -r, -c, ...) could bring packages from outside the wheel index, or hide pins.
+_ALLOWED_OPTIONS = ("-e", "--editable")
+
+
+def requirement_lines(text: str) -> list[str]:
+    """Logical lines of a requirements file: `\\` continuations joined, comments and --hash options dropped."""
+    joined = re.sub(r"\\\r?\n", " ", text)
+    out = []
+    for line in joined.splitlines():
+        line = re.sub(r"(^|\s)#.*", "", line)
+        line = _HASH_OPT.sub("", " " + line).strip()
+        if line:
+            out.append(line)
+    return out
+
+
+def _option_lines(lines: list[str]) -> list[str]:
+    return [l for l in lines if l.startswith("-") and l.split()[0].split("=")[0] not in _ALLOWED_OPTIONS]
+
+
 _REQ_NAME = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)")
 _EXACT_PIN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)(\[[^\]]*\])?\s*===?\s*[^\s;,*]+\s*(;.*)?$")
 
@@ -122,8 +153,7 @@ def _check_pinned(project: Path, modules: list[str]) -> CheckResult:
     reqs, lock = project / "requirements.txt", project / "uv.lock"
     problems = []
     if reqs.is_file():
-        lines = [l.split(" #")[0].strip() for l in reqs.read_text(errors="replace").splitlines()]
-        lines = [l for l in lines if l and not l.startswith("#")]
+        lines = requirement_lines(reqs.read_text(errors="replace"))
         for m in modules:
             if any((p := _EXACT_PIN.match(l)) and normalize(p.group(1)) == normalize(m) for l in lines):
                 continue
@@ -152,15 +182,22 @@ def _check_pinned(project: Path, modules: list[str]) -> CheckResult:
     return CheckResult("modules_pinned", True, f"all {len(modules)} modules pinned in {where}")
 
 
-def _project_code_files(project: Path):
-    """The project's own non-test .py files: no virtual environments, dot directories or tests."""
+def _py_files(project: Path, skip_tests: bool):
+    """The project's .py files outside virtual environments and dot directories; with `skip_tests`, also
+    outside the top-level tests/ directory and conftest.py (a test_*.py elsewhere may be app code)."""
     for dirpath, dirnames, filenames in os.walk(project):
+        top = Path(dirpath) == project
         dirnames[:] = [d for d in dirnames
                        if not d.startswith(".") and d not in SKIP_DIRS
+                       and not (skip_tests and top and d == "tests")
                        and not (Path(dirpath) / d / "pyvenv.cfg").exists()]
         for f in filenames:
-            if f.endswith(".py") and not (f.startswith("test_") or f.endswith("_test.py") or f == "conftest.py"):
+            if f.endswith(".py") and not (skip_tests and top and f == "conftest.py"):
                 yield Path(dirpath) / f
+
+
+def _project_code_files(project: Path):
+    return _py_files(project, skip_tests=True)
 
 
 # --- environment, pip check, tests ------------------------------------------
@@ -169,6 +206,7 @@ def _check_install(project: Path, venv: Path, index: Path, env: dict, logs: Path
     uv = str(uv_binary())
     if (project / "requirements.txt").is_file():
         source, reqs = "requirements.txt", ["-r", "requirements.txt"]
+        listed = project / "requirements.txt"
     elif (project / "uv.lock").is_file() and (project / "pyproject.toml").is_file():
         locked = tmp / "uv-lock-requirements.txt"
         e = run([uv, "export", "--frozen", "--no-hashes", "--no-emit-project", "--no-header", "--quiet",
@@ -176,9 +214,14 @@ def _check_install(project: Path, venv: Path, index: Path, env: dict, logs: Path
         if e.code != 0:
             return CheckResult("install", False, f"uv export --frozen failed: {_tail(e.output)}")
         source, reqs = "uv.lock", ["-r", str(locked)]
+        listed = locked
     else:
         return CheckResult("install", False, "nothing to install from: no requirements.txt, "
                                              "and no uv.lock with pyproject.toml")
+    options = _option_lines(requirement_lines(listed.read_text(errors="replace")))
+    if options:
+        return CheckResult("install", False, f"{source} has option lines that could install from outside the "
+                                             f"wheel index: {_listed(options)}")
     if _is_package(project):
         reqs.append(".")
     v = run([uv, "venv", "--quiet", "--python", SANDBOX_PYTHON, str(venv)], project, CMD_TIMEOUT_S,
@@ -268,17 +311,43 @@ def _stop(proc: subprocess.Popen) -> None:
     proc.wait()
 
 
-def _check_app(python: Path, project: Path, test: AcceptanceTest, env: dict,
-               logs: Path) -> tuple[CheckResult, str | None]:
-    """Start `python -m <app>`, wait for /healthz to answer 200, stop it. Returns the result and the app log."""
+# Runs the app as `python -m <app>` does (runpy, cwd first on sys.path) and writes the sorted names in
+# sys.modules to argv[1] on SIGUSR1 (sent once /healthz answers) and at exit, so the checker can see that
+# the app itself imported each module.
+_APP_WRAPPER = """\
+import atexit, json, os, runpy, signal, sys
+out, app = sys.argv[1], sys.argv[2]
+def dump(*_):
+    with open(out + '.tmp', 'w') as f:
+        json.dump(sorted(sys.modules), f)
+    os.replace(out + '.tmp', out)
+atexit.register(dump)
+signal.signal(signal.SIGUSR1, dump)
+signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGUSR1})  # the sandbox can hand it down blocked
+sys.argv = [app]
+runpy.run_module(app, run_name='__main__', alter_sys=True)
+"""
+_DUMP_WAIT_S = 3
+
+
+@dataclasses.dataclass
+class AppRun:
+    result: CheckResult
+    log: str | None = None           # None: the app never ran
+    imported: set[str] | None = None  # sys.modules names; None: the app wrote none
+    why_no_imports: str = ""
+
+
+def _check_app(python: Path, project: Path, test: AcceptanceTest, env: dict, logs: Path) -> AppRun:
+    """Start the app as `python -m <app>`, wait for /healthz to answer 200, record its imports, stop it."""
     port, app = test.app_port, test.python_app
     if _port_open(port):
-        return CheckResult("app_starts", False, f"port {port} was already in use before the app started"), None
+        return AppRun(CheckResult("app_starts", False, f"port {port} was already in use before the app started"))
     logs.mkdir(parents=True, exist_ok=True)
-    log = logs / "app.log"
+    log, dump = logs / "app.log", logs / "app-modules.json"
     with open(log, "wb") as out:
-        proc = subprocess.Popen([str(python), "-m", app], cwd=project, stdout=out, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, start_new_session=True,
+        proc = subprocess.Popen([str(python), "-c", _APP_WRAPPER, str(dump), app], cwd=project, stdout=out,
+                                stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
                                 env={**env, "PYTHONUNBUFFERED": "1", "PORT": str(port)})
     try:
         deadline = time.monotonic() + STARTUP_TIMEOUT_S
@@ -290,30 +359,62 @@ def _check_app(python: Path, project: Path, test: AcceptanceTest, env: dict,
                 break
             time.sleep(0.2)
         code = proc.poll()
+        if code is None:  # still running, healthy or not: ask for its imports before stopping it
+            proc.send_signal(signal.SIGUSR1)
+            until = time.monotonic() + _DUMP_WAIT_S
+            while not dump.exists() and time.monotonic() < until and proc.poll() is None:
+                time.sleep(0.05)
     finally:
         _stop(proc)
     text = log.read_text(errors="replace")
+    imported, why = None, ""
+    try:
+        imported = set(json.loads(dump.read_text()))
+    except (OSError, ValueError, TypeError) as e:
+        why = f"{type(e).__name__}: {e}"
     if last == 200:
-        return CheckResult("app_starts", True, f"python -m {app} started; GET /healthz returned 200"), text
-    if code is not None:
-        return CheckResult("app_starts", False, f"python -m {app} exited {code} before /healthz answered 200: "
-                                                f"{_tail(text, 4)}"), text
-    return CheckResult("app_starts", False, f"no 200 from /healthz on port {port} within {STARTUP_TIMEOUT_S}s "
-                                            f"(last: {last}): {_tail(text, 4)}"), text
+        result = CheckResult("app_starts", True, f"python -m {app} started; GET /healthz returned 200")
+    elif code is not None:
+        result = CheckResult("app_starts", False, f"python -m {app} exited {code} before /healthz answered 200: "
+                                                  f"{_tail(text, 4)}")
+    else:
+        result = CheckResult("app_starts", False, f"no 200 from /healthz on port {port} within "
+                                                  f"{STARTUP_TIMEOUT_S}s (last: {last}): {_tail(text, 4)}")
+    return AppRun(result, text, imported, why)
 
 
-def _check_live(log: str | None, modules: list[str]) -> CheckResult:
-    if log is None:
+def _check_live(run_: AppRun, project: Path, venv: Path, modules: list[str]) -> CheckResult:
+    """Each marker printed once as a whole line by the app, which imported the module itself, and no project
+    file (outside virtual environments) holds the marker text to print it on the module's behalf."""
+    if run_.log is None:
         return CheckResult("modules_live", False, "not run: the app did not start")
-    lines = [l.rstrip("\r") for l in log.splitlines()]
+    lines = [l.rstrip("\r") for l in run_.log.splitlines()]
+    site = _site_packages(venv)
+    sources = {}
+    for f in _py_files(project, skip_tests=False):
+        try:
+            sources[f.relative_to(project).as_posix()] = f.read_text(errors="replace")
+        except OSError:
+            pass
     problems = []
     for m in modules:
-        n = lines.count(f"[{m}] live")
+        marker = f"[{m}] live"
+        n = lines.count(marker)
         if n != 1:
-            problems.append(f"[{m}] live printed {n} times, want 1")
+            problems.append(f"{marker} printed {n} times, want 1")
+        dist = _find_dist(site, m) if site else None
+        names = _import_names(dist) if dist else []
+        if run_.imported is None:
+            problems.append(f"{m}: could not tell whether the app imported it (no module list from the app: "
+                            f"{run_.why_no_imports})")
+        elif not any(name in run_.imported for name in names):
+            problems.append(f"{m}: the app never imported {' or '.join(names) or 'it'}")
+        problems += [f"{m}: {rel} contains the marker text {marker!r}" for rel, src in sorted(sources.items())
+                     if marker in src]
     if problems:
-        return CheckResult("modules_live", False, "; ".join(problems))
-    return CheckResult("modules_live", True, f"each of {len(modules)} markers printed once by the app")
+        return CheckResult("modules_live", False, _listed(problems))
+    return CheckResult("modules_live", True,
+                       f"the app imported all {len(modules)} modules and printed each marker once")
 
 
 def _check_traceback(log: str | None) -> CheckResult:
@@ -348,7 +449,48 @@ def _find_dist(site: Path, module: str) -> Path | None:
     return None
 
 
-def _check_installed(venv: Path, modules: list[str]) -> CheckResult:
+def _record(text: str) -> dict[str, str]:
+    """path -> hash for the RECORD rows that have a hash."""
+    return {row[0]: row[1] for row in csv.reader(text.splitlines()) if len(row) >= 2 and row[1]}
+
+
+def _payload(record: dict[str, str]) -> dict[str, str]:
+    """The rows a wheel and its install share unchanged: everything but the dist-info and .data files
+    (installers add to dist-info, and rewrite scripts under .data)."""
+    return {p: h for p, h in record.items()
+            if not p.split("/")[0].endswith((".dist-info", ".data")) and not p.startswith("../")}
+
+
+def _version(dist: Path) -> str:
+    meta = (dist / "METADATA").read_text(errors="replace")
+    v = re.search(r"^Version:\s*(\S+)", meta, re.M)
+    return v.group(1) if v else "?"
+
+
+def _index_mismatch(index: Path, module: str, dist: Path) -> str | None:
+    """Why the installed `dist` is not one of the index's wheels for its name and version, or None."""
+    version = _version(dist)
+    wheels = [w for w in sorted(index.glob("*.whl"))
+              if len(parts := w.name.split("-")) >= 5
+              and normalize(parts[0]) == normalize(module) and parts[1] == version]
+    if not wheels:
+        return f"{module}=={version} is not in the wheel index"
+    try:
+        installed = _payload(_record((dist / "RECORD").read_text(errors="replace")))
+    except OSError:
+        return f"{dist.name}/RECORD is missing"
+    for w in wheels:
+        try:
+            with zipfile.ZipFile(w) as z:
+                name = next(n for n in z.namelist() if n.endswith(".dist-info/RECORD") and n.count("/") == 1)
+                if _payload(_record(z.read(name).decode("utf-8", "replace"))) == installed:
+                    return None
+        except (OSError, zipfile.BadZipFile, StopIteration, KeyError):
+            continue
+    return f"{module}=={version} installed files differ from the index wheel ({', '.join(w.name for w in wheels)})"
+
+
+def _check_installed(venv: Path, modules: list[str], index: Path) -> CheckResult:
     site = _site_packages(venv)
     problems = []
     for m in modules:
@@ -367,6 +509,9 @@ def _check_installed(venv: Path, modules: list[str]) -> CheckResult:
             kind = ("an editable install" if isinstance(dir_info, dict) and dir_info.get("editable")
                     else "a local directory install" if dir_info is not None else "a direct URL install")
             problems.append(f"{m}: {kind} from {url}, not from the wheel index")
+            continue
+        if (why := _index_mismatch(index, m, dist)) is not None:
+            problems.append(why)
     if problems:
         return CheckResult("modules_installed", False, _listed(problems))
     return CheckResult("modules_installed", True, f"all {len(modules)} modules installed from the wheel index")
