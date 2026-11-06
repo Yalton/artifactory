@@ -34,7 +34,8 @@ def cmd_round(args) -> int:
     from .harness import run_round
 
     result = run_round(Path(args.test_dir), args.round, trials=args.trials, baseline=args.baseline,
-                       product=args.product, arc=args.arc, arc_src=args.arc_src, roadmap=args.roadmap)
+                       product=args.product, arc=args.arc, arc_src=args.arc_src, roadmap=args.roadmap,
+                       time_limit_s=args.time_limit_s)
     print(f"{result.test} {'baseline' if args.baseline else f'round {result.round}'}: "
           f"{result.passes}/{len(result.results)} passed; bar {'met' if result.met_bar else 'not met'}"
           + (f"; {result.infrastructure_failures} infrastructure failures" if result.infrastructure_failures else ""))
@@ -125,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
                    help="bead conditions (need --product --arc): frontier imports the frozen roadmap, "
                         "ornith writes one first; none is one session with the brief")
     r.add_argument("--arc-src", type=Path, help="arc source tree to build (default $ARC_SRC)")
+    r.add_argument("--time-limit-s", type=int, help="wall-clock seconds per trial (default: test.yaml's time_limit_s)")
     r.set_defaults(func=cmd_round)
     m = sub.add_parser("mirror", help="refresh bare mirrors of the Godot kits into results/mirrors/")
     m.set_defaults(func=cmd_mirror)

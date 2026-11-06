@@ -776,6 +776,23 @@ def test_round_dir_and_json_carry_roadmap(tmp_path):
     assert json.loads(RoundResult("t", 1).to_json())["roadmap"] == "none"
 
 
+def test_round_time_limit_overrides_test_yaml_and_is_recorded(tmp_path, monkeypatch):
+    seen = []
+    def fake_trial(test, *a, **k):
+        seen.append(test.time_limit_s)
+        return TrialResult(test.name, "trial", reason="timeout")
+    monkeypatch.setattr(harness, "run_trial", fake_trial)
+    monkeypatch.setattr(harness, "build_cli", lambda root: root / "artifactory")
+    monkeypatch.setattr(harness, "render_index", lambda *a: "# index")
+    for m in GODOT_TEST.modules:
+        (tmp_path / "mirrors" / f"{m}.git").mkdir(parents=True)
+    result = harness.run_round(ROOT / "tests" / "acceptance" / "godot-capsule-room", 1, trials=2, results_root=tmp_path, time_limit_s=43200)
+    assert seen == [43200, 43200]
+    assert json.loads(result.to_json())["time_limit_s"] == 43200
+    with pytest.raises(ValueError, match="positive"):
+        harness.run_round(ROOT / "tests" / "acceptance" / "godot-capsule-room", 2, trials=1, results_root=tmp_path, time_limit_s=0)
+
+
 def test_cli_round_roadmap_choices():
     from artifactory.cli import main
     with pytest.raises(SystemExit):
