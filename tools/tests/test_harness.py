@@ -1320,12 +1320,22 @@ def test_pyindex_round_uses_a_per_test_directory_and_test_wheels(tmp_path, monke
     monkeypatch.setattr(harness, "build_cli", lambda root: tmp_path / "cli")
     monkeypatch.setattr(harness, "render_index", lambda *a: "# index")
     monkeypatch.setattr(harness, "export_kits", lambda mirrors, modules, branch, dest: [dest / m for m in modules])
-    monkeypatch.setattr(harness, "build_pyindex", lambda dirs, out: calls.update(kits=[d.name for d in dirs], out=out))
-    monkeypatch.setattr(harness, "download_wheels", lambda specs, out: calls.update(specs=specs, dl_out=out))
+    def fake_download(specs, out):
+        calls.update(specs=specs, dl_out=out)
+        for name in ("pytest-9.2.0-py3-none-any.whl", "hatchling-1.33.0-py3-none-any.whl"):
+            (out / name).write_bytes(b"")
+    monkeypatch.setattr(harness, "download_wheels", fake_download)
     monkeypatch.setattr(harness, "run_trial", lambda *a, **k: calls.update(pyindex=k["pyindex"]) or TrialResult(
         test="py-test", trial="trial-1", checks=[], reason=None))
-    harness.run_round(test_dir, 1, trials=1, results_root=tmp_path / "res")
+    monkeypatch.setattr(harness, "build_pyindex", lambda dirs, out: (calls.update(kits=[d.name for d in dirs], out=out),
+                                                                     out.mkdir(parents=True)))
+    result = harness.run_round(test_dir, 1, trials=1, results_root=tmp_path / "res")
     want = (tmp_path / "res" / "pyindex" / "py-test").resolve()
     assert calls["out"] == calls["dl_out"] == calls["pyindex"] == want
     assert calls["kits"] == ["PyKit"]
     assert calls["specs"][-1] == "requests==2.32.3" and any(s.startswith("uv_build") for s in calls["specs"])
+    assert "pytest==9.2.0" in calls["specs"] and "hatchling==1.33.0" in calls["specs"]
+    wheels = ["hatchling-1.33.0-py3-none-any.whl", "pytest-9.2.0-py3-none-any.whl"]
+    assert result.pyindex_wheels == wheels
+    recorded = json.loads(next((tmp_path / "res").rglob("round.json")).read_text())
+    assert recorded["pyindex_wheels"] == wheels
