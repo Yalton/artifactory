@@ -13,7 +13,8 @@ import pytest
 from artifactory import harness
 from artifactory.acceptance import load_acceptance
 from artifactory.goproxy import build_goproxy
-from artifactory.harness import RoundResult, prepare_trial, run_trial
+from artifactory.harness import RoundResult, export_kits, prepare_trial, run_trial
+from artifactory.pyindex import build_pyindex
 from artifactory.result import CheckResult, TrialResult
 from artifactory.sandbox import allowlist, egress_ruleset, sandbox_command
 
@@ -1167,3 +1168,74 @@ def test_a_refused_export_keeps_the_existing_roadmap(workspace, tmp_path):
         harness.export_roadmap(trial.project, out)
     assert out.read_text() == "old roadmap\n"
     assert [p.name for p in tmp_path.iterdir() if p.name.startswith("frontier")] == ["frontier.jsonl"]
+
+
+# --- local Python package source ------------------------------------------
+
+def py_package(root: Path, name: str, version: str, deps: list[str] = (), marker: str | None = None) -> Path:
+    """A tiny hatchling project; importing it prints `marker`."""
+    mod = name.replace("-", "_")
+    (root / mod).mkdir(parents=True)
+    (root / mod / "__init__.py").write_text(f"print({marker!r})\n" if marker else "")
+    (root / "pyproject.toml").write_text(
+        f'[project]\nname = "{name}"\nversion = "{version}"\nrequires-python = \">=3.10\"\ndependencies = {json.dumps(list(deps))}\n'
+        '[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"\n')
+    return root
+
+
+def test_python_kits_install_from_the_local_index_with_network_off(tmp_path):
+    """pip and uv in a networkless sandbox install a kit and its pinned third-party dependency from the index."""
+    dep_wheel = build_pyindex([py_package(tmp_path / "dep", "pinned-dep", "1.0", marker="DEP-ALIVE")],
+                              tmp_path / "wheelhouse")
+    kit = py_package(tmp_path / "kit", "stub-kit", "0.1.0", deps=["pinned-dep==1.0"], marker="STUBKIT-ALIVE")
+    index = tmp_path / "pyindex"
+    built = build_pyindex([kit], index, wheels=dep_wheel)
+    assert sorted(w.name for w in built) == ["pinned_dep-1.0-py3-none-any.whl", "stub_kit-0.1.0-py3-none-any.whl"]
+
+    trial = prepare_trial(GO_TEST, "# index", tmp_path / "trial-1", None, None, pyindex=index)
+    assert trial.env["PIP_FIND_LINKS"] == trial.env["UV_FIND_LINKS"] == str(index.resolve())
+    assert trial.env["PIP_NO_INDEX"] == trial.env["UV_OFFLINE"] == "1"
+    assert index.resolve() in trial.ro_binds and (trial.bin / "uv").is_file()
+    script = (
+        "set -e\n"
+        "python3 -m venv pipenv && pipenv/bin/pip install -q stub-kit\n"
+        "pipenv/bin/python -c 'import pinned_dep, stub_kit' > pip.out\n"
+        "uv venv -q uvenv && VIRTUAL_ENV=uvenv uv pip install -q stub-kit\n"
+        "uvenv/bin/python -c 'import pinned_dep, stub_kit' > uvpip.out\n"
+        "uv init -q --no-workspace --vcs none app && cd app && uv add -q stub-kit\n"
+        "uv run -q python -c 'import pinned_dep, stub_kit' > ../uvadd.out\n"
+    )
+    # No allow list: the sandbox has no network at all.
+    cmd = sandbox_command(trial.project, trial.home, trial.ro_binds, ["/bin/sh", "-c", script], trial.env)
+    r = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=300)
+    assert r.returncode == 0, r.stdout + r.stderr
+    for out in ("pip.out", "uvpip.out", "uvadd.out"):
+        assert (trial.project / out).read_text().split() == ["DEP-ALIVE", "STUBKIT-ALIVE"], out
+
+
+def test_sandbox_pip_without_the_index_finds_nothing(tmp_path):
+    """The control for the test above: with the index unset, pip cannot reach PyPI from the sandbox."""
+    trial = prepare_trial(GO_TEST, "# index", tmp_path / "trial-1", None, None)
+    assert "PIP_FIND_LINKS" not in trial.env and not (trial.bin / "uv").exists()
+    script = "python3 -m venv v && v/bin/pip install --retries 0 --timeout 5 requests"
+    cmd = sandbox_command(trial.project, trial.home, trial.ro_binds, ["/bin/sh", "-c", script], trial.env)
+    r = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+    assert r.returncode != 0
+    assert "No matching distribution" in r.stderr
+
+
+def test_export_kits_checks_out_the_branch_for_building(tmp_path):
+    src = py_package(tmp_path / "src", "mirror-kit", "0.2.0")
+    git("init", "-q", "-b", "main", cwd=src)
+    git("add", "-A", cwd=src)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init", cwd=src)
+    git("clone", "-q", "--mirror", str(src), str(tmp_path / "mirrors" / "MirrorKit.git"), cwd=tmp_path)
+    dirs = export_kits(tmp_path / "mirrors", ["MirrorKit"], "main", tmp_path / "out")
+    assert dirs == [tmp_path / "out" / "MirrorKit"] and not (dirs[0] / ".git").exists()
+    assert [w.name for w in build_pyindex(dirs, tmp_path / "idx")] == ["mirror_kit-0.2.0-py3-none-any.whl"]
+
+
+def test_pyindex_rejects_a_conflicting_wheel(tmp_path):
+    a = build_pyindex([py_package(tmp_path / "a", "same", "1.0", marker="A")], tmp_path / "wa")
+    with pytest.raises(ValueError, match="two different wheels"):
+        build_pyindex([py_package(tmp_path / "b", "same", "1.0", marker="B")], tmp_path / "idx", wheels=a)
