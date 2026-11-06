@@ -32,12 +32,15 @@ test: pytest
 // Install of a python module offline (find-links only) installs it into the
 // project's .venv, records it, and indexes it from the installed module.yaml.
 func TestInstallPythonOffline(t *testing.T) {
-	if _, err := exec.LookPath("python3"); err != nil {
-		t.Skip("python3 not found")
+	if err := exec.Command("python3", "-c", "import venv, ensurepip").Run(); err != nil {
+		t.Skip("python3 with venv and ensurepip not available")
 	}
-	for _, k := range []string{"UV_FIND_LINKS", "UV_OFFLINE", "VIRTUAL_ENV"} {
+	for _, k := range []string{"UV_FIND_LINKS", "UV_OFFLINE", "VIRTUAL_ENV", "UV_PROJECT_ENVIRONMENT"} {
 		t.Setenv(k, "")
+		os.Unsetenv(k)
 	}
+	t.Setenv("PIP_CONFIG_FILE", os.DevNull)
+	t.Setenv("UV_NO_CONFIG", "1")
 	links := t.TempDir()
 	if _, err := pystub.Wheel(links, "rate-limiter", "0.1.0", "rate_limiter", map[string]string{"module.yaml": pyKitYAML}); err != nil {
 		t.Fatal(err)
@@ -60,9 +63,13 @@ func TestInstallPythonOffline(t *testing.T) {
 	if err := project.Save(proj, project.File{Ecosystem: descriptor.Python, Provider: "dir:" + kits}); err != nil {
 		t.Fatal(err)
 	}
-	res, err := App{}.Install(context.Background(), proj, []string{"rate-limiter"}, nil)
+	var said []string
+	res, err := App{}.Install(context.Background(), proj, []string{"rate-limiter"}, func(s string) { said = append(said, s) })
 	if err != nil || len(res.Installed) != 1 || res.Installed[0].Version != "0.1.0" {
 		t.Fatalf("Install = %+v, %v", res, err)
+	}
+	if strings.Join(said, "|") != "created .venv|installed rate-limiter (v0.1.0)" {
+		t.Errorf("progress = %q", said)
 	}
 
 	// With the catalog gone, the index reads only the installed copy.

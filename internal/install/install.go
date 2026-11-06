@@ -22,7 +22,8 @@ import (
 // importlib.metadata.
 func Locate(projectDir string, m catalog.Module) (string, error) {
 	if m.Ecosystem == descriptor.Python {
-		return locatePython(projectDir, m)
+		dir, _, err := locatePython(projectDir, m)
+		return dir, err
 	}
 	if m.Ecosystem == descriptor.GodotCSharp {
 		dir := filepath.Join(projectDir, "addons", m.Name)
@@ -67,19 +68,27 @@ func GoModulePath(line string) (string, error) {
 
 // Run executes m.Install with sh -c in projectDir, streaming output to
 // stderr, then reads the installed copy's module.yaml and returns its version.
-// A python module is installed into the project's .venv, offline as
-// <name>==<version> (see pythonInstallCmd), and its installed module.yaml
-// must name it and the python ecosystem.
+// A python module is installed into the project's .venv (see planPython),
+// and its installed module.yaml must name it and the python ecosystem.
 func Run(ctx context.Context, projectDir string, m catalog.Module) (string, error) {
+	return RunProgress(ctx, projectDir, m, nil)
+}
+
+// RunProgress is Run with a progress callback (may be nil), told of steps
+// such as creating a python venv.
+func RunProgress(ctx context.Context, projectDir string, m catalog.Module, say func(string)) (string, error) {
+	if say == nil {
+		say = func(string) {}
+	}
 	if m.Ecosystem == descriptor.Python {
-		if err := runPython(ctx, projectDir, m); err != nil {
-			return "", err
-		}
-		dir, err := locatePython(projectDir, m)
+		absDir, err := filepath.Abs(projectDir)
 		if err != nil {
 			return "", err
 		}
-		d, err := loadPython(dir, m.Name)
+		if err := runPython(ctx, absDir, m, say); err != nil {
+			return "", err
+		}
+		_, d, err := locatePython(absDir, m)
 		if err != nil {
 			return "", fmt.Errorf("installed copy of %s: %w", m.Name, err)
 		}

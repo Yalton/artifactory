@@ -411,7 +411,7 @@ func (a App) Install(ctx context.Context, dir string, names []string, progress f
 			say(fmt.Sprintf("%s already installed (v%s)", m.Name, strings.TrimPrefix(v, "v")))
 			continue
 		}
-		v, err := install.Run(ctx, dir, m)
+		v, err := install.RunProgress(ctx, dir, m, say)
 		if err != nil {
 			return a.partial(ctx, dir, res, problemErr(err.Error()))
 		}
