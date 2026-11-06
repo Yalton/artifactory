@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -30,6 +31,7 @@ PROBE_DIR = "artifactory_probe"
 PROBE_AUTOLOAD = f'ArtifactoryCheckerProbe="*res://{PROBE_DIR}/CheckerProbe.cs"'
 
 PROBE_MODE_ENV = "ARTIFACTORY_PROBE_MODE"
+PROBE_NONCE_ENV = "ARTIFACTORY_PROBE_NONCE"
 LANTERN_ROOMS = ("courtyard", "hall", "tower")
 
 ERROR_LINE = re.compile(r"ERROR:|Unhandled exception")
@@ -58,7 +60,9 @@ def check_godot(project: Path, test: AcceptanceTest, mirrors: Path, branch: str,
         lantern = test.probe == "lantern"
         title = _check_title_scene(copy) if lantern else None
 
-        build, run = _build_and_run(copy, Path(tmp) / "logs", probe_mode="lantern" if lantern else None)
+        nonce = secrets.token_hex(16)
+        build, run = _build_and_run(copy, Path(tmp) / "logs", probe_mode="lantern" if lantern else None,
+                                    nonce=nonce)
         probes = ["player_moves", "player_visible"] + (["rooms", "dialogue"] if lantern else ["room_present"])
         if run is None:
             runs = CheckResult("runs", False, "not run: build failed")
@@ -66,7 +70,7 @@ def check_godot(project: Path, test: AcceptanceTest, mirrors: Path, branch: str,
             output = ""
         else:
             runs = _check_runs(run, copy, _blank_errors(test.fixture))
-            probed = [_check_probe(run, name) for name in probes]
+            probed = [_check_probe(run, name, nonce) for name in probes]
             output = run.output
         live = _check_live(copy, test.modules, output)
 
@@ -239,6 +243,7 @@ def _project_code_files(project: Path, excluded: set[str]):
 def _env() -> dict[str, str]:
     env = dict(os.environ)
     env.pop(PROBE_MODE_ENV, None)  # set per run, only on a trial copy's godot run
+    env.pop(PROBE_NONCE_ENV, None)
     # Headless Godot still pops a zenity dialog for some errors when a display is set.
     env.pop("DISPLAY", None)
     env.pop("WAYLAND_DISPLAY", None)
@@ -287,10 +292,12 @@ def _tail(text: str, n: int = 8) -> str:
     return " | ".join(lines[-n:])
 
 
-def _build_and_run(project: Path, logs: Path, probe_mode: str | None = None) -> tuple[CheckResult, _Proc | None]:
+def _build_and_run(project: Path, logs: Path, probe_mode: str | None = None,
+                   nonce: str = "") -> tuple[CheckResult, _Proc | None]:
     """Build the copy with the probe compiled in, import, then run it headless.
 
-    `probe_mode` (e.g. "lantern") reaches the probe through ARTIFACTORY_PROBE_MODE on the run only."""
+    `probe_mode` (e.g. "lantern") reaches the probe through ARTIFACTORY_PROBE_MODE on the run only,
+    as does `nonce` through ARTIFACTORY_PROBE_NONCE."""
     if not (project / "project.godot").is_file():
         return CheckResult("build", False, "no project.godot"), None
     csproj = _find_csproj(project)
@@ -314,7 +321,8 @@ def _build_and_run(project: Path, logs: Path, probe_mode: str | None = None) -> 
     if imp.timed_out:
         return build, _Proc(None, f"godot --import timed out after {IMPORT_TIMEOUT_S}s\n" + imp.output, imp.seconds)
     run = _run(["godot", "--headless", "--path", str(project)], project, RUN_TIMEOUT_S, logs / "run.log",
-               extra_env={PROBE_MODE_ENV: probe_mode} if probe_mode else None)
+               extra_env={**({PROBE_MODE_ENV: probe_mode} if probe_mode else {}),
+                          **({PROBE_NONCE_ENV: nonce} if nonce else {})})
     return build, run
 
 
@@ -372,15 +380,26 @@ def _check_runs(run: _Proc, project: Path, blank_errors: set[str]) -> CheckResul
     return CheckResult("runs", True, f"exited 0 after {run.seconds:.1f}s with no new errors")
 
 
-def _check_probe(run: _Proc, name: str) -> CheckResult:
-    """The probe's last `PROBE <name>=...` line decides the check."""
-    probe = [l.strip() for l in run.output.splitlines() if l.strip().startswith(f"PROBE {name}=")]
+def _probe_lines(output: str, nonce: str) -> list[str]:
+    """Probe lines that carry `nonce`, as `PROBE <rest>` with the nonce removed, in output order.
+
+    Lines without the nonce (for example ones printed by game code) are ignored."""
+    prefix = f"PROBE {nonce} "
+    if not nonce:
+        return []
+    return ["PROBE " + l[len(prefix):] for l in (l.strip() for l in output.splitlines()) if l.startswith(prefix)]
+
+
+def _check_probe(run: _Proc, name: str, nonce: str) -> CheckResult:
+    """The first nonce-carrying `PROBE <name>=...` line decides the check."""
+    lines = _probe_lines(run.output, nonce)
+    probe = [l for l in lines if l.startswith(f"PROBE {name}=")]
     if not probe:
-        errors = [l.strip() for l in run.output.splitlines() if l.strip().startswith("PROBE lantern_error=")]
+        errors = [l for l in lines if l.startswith("PROBE lantern_error=")]
         if errors:
             return CheckResult(name, False, f"probe never reported: {errors[-1]}")
         return CheckResult(name, False, "probe never reported (game did not run to 3 s)")
-    line = probe[-1]
+    line = probe[0]
     return CheckResult(name, f"{name}=true" in line.split(), line)
 
 
@@ -421,7 +440,10 @@ def _marker(project: Path, name: str) -> str:
 
 
 def _check_live(project: Path, modules: list[str], output: str) -> CheckResult:
-    missing = [name for name in modules if _marker(project, name) not in output]
+    lines = {l.strip() for l in output.splitlines()}
+    # A whole line, not a substring. Kit code prints these, so a nonce cannot apply: game code
+    # can still print a marker line itself (full protection would need kits to sign markers).
+    missing = [name for name in modules if _marker(project, name) not in lines]
     if missing:
         return CheckResult("modules_live", False,
                            "marker missing for " + ", ".join(f"{n} ({_marker(project, n)!r})" for n in missing))
