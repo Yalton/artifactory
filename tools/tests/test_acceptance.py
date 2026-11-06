@@ -46,3 +46,15 @@ def test_capsule_room_has_no_roadmap_prompt_or_probe():
     t = load_acceptance(path)
     assert t.roadmap_prompt is None and t.probe is None
     assert t.dir == path.resolve()
+
+
+def test_python_url_shortener_loads():
+    t = load_acceptance(ROOT / "tests/acceptance/python-url-shortener")
+    assert t.ecosystem == "python" and t.modules == ["env-settings", "json-kv", "http-runner"]
+    assert t.python_app == "shortener" and t.app_port == 8080 and t.python_wheels == ()
+    assert t.fixture == (ROOT / "fixtures/python-blank").resolve() and (t.fixture / ".gitignore").is_file()
+    assert set(t.duplication) == set(t.modules)
+    for p in (q for ps in t.duplication.values() for q in ps):
+        re.compile(p)
+    for contract in ("python -m shortener", "SHORTENER_PORT", "SHORTENER_DATA", "POST /links", "/healthz"):
+        assert contract in t.prompt

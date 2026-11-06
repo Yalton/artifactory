@@ -1,0 +1,16 @@
+name: env-settings
+ecosystem: python
+version: 0.1.0
+summary: Load typed settings from env vars, an optional KEY=value file and dataclass defaults.
+replaces:
+  - reading settings with os.environ or os.getenv
+  - parsing env vars and config files into typed values
+  - default values for settings
+install: pip install "env-settings @ git+ssh://git@repo.billbert.co/artifactory/env-settings.git@v0.1.0"
+setup: []
+entry:
+  - env_settings.load
+liveness: "[env-settings] live"
+docs: README.md
+example: example/main.py
+test: pytest

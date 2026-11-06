@@ -1,0 +1,28 @@
+# Regexes matched against project code outside installed modules and the top-level tests/.
+# The request handler class (BaseHTTPRequestHandler), routing on self.path, json.loads and
+# json.dumps of request and response bodies, reading files, and short-code generation
+# (secrets, random: the app's own gap, no kit covers it) are needed glue and are
+# deliberately not matched.
+env-settings:
+  - 'os\.environ'
+  - '\bgetenv\('
+  - '^\s*from\s+os\s+import\s+.*\b(environ|getenv)\b'
+json-kv:
+  - 'json\.load\('
+  - 'json\.dump\('
+  - 'os\.(replace|rename)\('
+  - 'os\.fsync\('
+  - '\.(write_text|write_bytes)\('
+  # open(...), Path.open(...) and os.fdopen(...) with a mode that writes: w, a, x or +, with b or t.
+  - '(?<!json_kv\.)\b(fd)?open\((.*?,\s*)?(mode\s*=\s*)?["''](?=[rwaxbt+]*[wax+])[rwaxbt+]+["'']'
+  - '^\s*(import|from)\s+(sqlite3|shelve|pickle|dbm|tempfile)\b'
+http-runner:
+  - 'HTTPServer\('
+  - 'serve_forever\('
+  - '^\s*(import|from)\s+socketserver\b'
+  - '^\s*(import|from)\s+wsgiref\b'
+  - 'asyncio\.start_server\('
+  - 'signal\.signal\('
+  - '^\s*from\s+signal\s+import\b'
+  - 'add_signal_handler\('
+  - '["'']/healthz'
