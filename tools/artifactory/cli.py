@@ -63,7 +63,7 @@ def cmd_round(args) -> int:
 def cmd_mirror(args) -> int:
     from .harness import refresh_mirrors
 
-    for path in refresh_mirrors():
+    for path in refresh_mirrors(tests=[Path(t) for t in args.test_dirs] or None):
         print(path)
     return 0
 
@@ -147,7 +147,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--arc-src", type=Path, help="arc source tree to build (default $ARC_SRC)")
     r.add_argument("--time-limit-s", type=int, help="wall-clock seconds per trial (default: test.yaml's time_limit_s)")
     r.set_defaults(func=cmd_round)
-    m = sub.add_parser("mirror", help="refresh bare mirrors of the Godot kits into results/mirrors/")
+    m = sub.add_parser("mirror", help="refresh bare mirrors of the tests' kits (default: the Godot kits) into results/mirrors/")
+    m.add_argument("test_dirs", nargs="*", help="acceptance test dirs whose modules to mirror")
     m.set_defaults(func=cmd_mirror)
     w = sub.add_parser("roadmap-workspace", help="prepare the frontier roadmap writer's workspace (no roadmap imported)")
     w.add_argument("test_dir")

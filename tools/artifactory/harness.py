@@ -1015,12 +1015,16 @@ def round_dir(root: Path, test: str, round_no: int, baseline: bool, roadmap: str
     return Path(root) / test / (f"round-{round_no}" if roadmap == "none" else f"round-{round_no}-{roadmap}")
 
 
-def refresh_mirrors(root: Path | None = None) -> list[Path]:
-    """Bare mirrors of the Godot test's kits, with the user's ssh credentials (runs outside any sandbox)."""
+def refresh_mirrors(root: Path | None = None, tests: list[Path] | None = None) -> list[Path]:
+    """Bare mirrors of the given tests' kits (default: the Godot test's), with the user's ssh credentials.
+
+    Runs outside any sandbox.
+    """
     mirrors = Path(root or RESULTS).resolve() / "mirrors"
     mirrors.mkdir(parents=True, exist_ok=True)
+    names = dict.fromkeys(name for test in (tests or [GODOT_TEST]) for name in load_acceptance(test).modules)
     done = []
-    for name in load_acceptance(GODOT_TEST).modules:
+    for name in names:
         dest = mirrors / f"{name}.git"
         if dest.is_dir():
             _git_retrying(["git", "remote", "update", "--prune"], cwd=dest)

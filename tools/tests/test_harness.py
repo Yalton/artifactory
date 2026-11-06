@@ -1351,3 +1351,15 @@ def test_go_round_uses_a_per_test_goproxy_directory(tmp_path, monkeypatch):
         test=GO_TEST.name, trial="trial-1", checks=[], reason=None))
     harness.run_round(GO_TEST_DIR, 1, trials=1, results_root=tmp_path / "res")
     assert calls["out"] == calls["proxy"] == (tmp_path / "res" / "goproxy" / GO_TEST.name).resolve()
+
+
+def test_refresh_mirrors_takes_the_given_tests_modules(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(harness, "_git_retrying", lambda argv, cwd=None: calls.append(argv))
+    py = harness.REPO / "tests" / "acceptance" / "python-url-shortener"
+    done = harness.refresh_mirrors(tmp_path, tests=[py, py])
+    names = [p.name for p in done]
+    assert names == [f"{m}.git" for m in load_acceptance(py).modules]
+    assert all(argv[:3] == ["git", "clone", "--mirror"] for argv in calls)
+    default = harness.refresh_mirrors(tmp_path / "godot")
+    assert [p.name for p in default] == [f"{m}.git" for m in load_acceptance(harness.GODOT_TEST).modules]
