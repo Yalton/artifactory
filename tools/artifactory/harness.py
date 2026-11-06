@@ -27,6 +27,7 @@ import os
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -34,6 +35,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -41,7 +43,7 @@ from .acceptance import AcceptanceTest, load_acceptance
 from .checks.go import go_env
 from .goproxy import build_goproxy
 from .result import CheckResult, TrialResult
-from .sandbox import sandbox_command
+from .sandbox import allowlist, sandbox_command
 
 REPO = Path(__file__).resolve().parents[2]
 RESULTS = REPO / "results"
@@ -226,6 +228,7 @@ def _base_env(home: Path, bin_dir: Path, proxy: Path | None) -> dict[str, str]:
         "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
         "DOTNET_NOLOGO": "1",
         "GIT_TERMINAL_PROMPT": "0",
+        "OPENCODE_DISABLE_MODELS_FETCH": "1",  # models.dev is out of reach: the sandbox only reaches the model
     }
     if proxy is not None:
         genv = go_env(proxy, home / "go")
@@ -401,8 +404,26 @@ def _unexportable(beads: list[dict]) -> list[str]:
 
 # --- running ---------------------------------------------------------------
 
+def model_endpoints(url: str | None = None) -> list[tuple[str, int]]:
+    """The llama server as (ip, port) for each address its host resolves to on the host.
+
+    These are the agent sandbox's only network destinations (the sandbox itself has no DNS).
+    """
+    url = url or LLAMA_URL
+    parts = urlsplit(url)
+    if not parts.hostname:
+        raise RuntimeError(f"LLAMA_URL {url!r} has no host")
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    try:
+        infos = socket.getaddrinfo(parts.hostname, port, type=socket.SOCK_STREAM)
+    except OSError as e:
+        raise RuntimeError(f"LLAMA_URL {url!r}: cannot resolve {parts.hostname!r}: {e}") from e
+    return list(dict.fromkeys((info[4][0], port) for info in infos))
+
+
 def agent_command(trial: Trial, argv: list[str]) -> list[str]:
-    return sandbox_command(trial.project, trial.home, trial.ro_binds, argv, trial.env)
+    return sandbox_command(trial.project, trial.home, trial.ro_binds, argv, trial.env,
+                           allow=allowlist(model_endpoints()))
 
 
 def _run_sandboxed(cmd: list[str], stdout: Path, stderr: Path | None, timeout: float,
@@ -475,6 +496,7 @@ def checker_command(trial: Trial, test_dir: Path, ecosystem: str, fixture: Path,
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONPATH"] = str(REPO / "tools")
     ro = [REPO, Path(test_dir), fixture, trial.project, trial.home, *_python_binds(), *trial.ro_binds]
+    # No allow list, not even ARTIFACTORY_SANDBOX_ALLOW: the checker gets no network.
     return sandbox_command(check_home, check_home, ro, argv, env, cwd=check_home)
 
 
