@@ -7,6 +7,7 @@ import (
 	"repo.billbert.co/artifactory/artifactory/internal/arcreg"
 	"repo.billbert.co/artifactory/artifactory/internal/catalog"
 	"repo.billbert.co/artifactory/artifactory/internal/descriptor"
+	"repo.billbert.co/artifactory/artifactory/internal/install"
 )
 
 func TestArcEntry(t *testing.T) {
@@ -48,5 +49,12 @@ func TestArcEntry(t *testing.T) {
 				t.Errorf("got %+v\nwant %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestArcEntryPythonUnsupported(t *testing.T) {
+	d := descriptor.Descriptor{Name: "foo", Ecosystem: descriptor.Python, Install: "pip install foo"}
+	if _, err := arcEntry(catalog.Module{Descriptor: d}); err != install.ErrPythonUnsupported {
+		t.Errorf("err = %v, want ErrPythonUnsupported", err)
 	}
 }

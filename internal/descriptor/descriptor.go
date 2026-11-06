@@ -28,8 +28,9 @@ var listFields = []string{"replaces", "setup", "entry"}
 
 var godotLiveness = regexp.MustCompile(`^\[\w+\] live$`)
 
-// pythonLiveness allows hyphens because distribution names have them.
-var pythonLiveness = regexp.MustCompile(`^\[[\w-]+\] live$`)
+// pythonLiveness matches the profile: a lowercase distribution name with
+// single hyphens.
+var pythonLiveness = regexp.MustCompile(`^\[[a-z0-9]+(-[a-z0-9]+)*\] live$`)
 
 // Descriptor is the parsed content of a module.yaml.
 type Descriptor struct {
