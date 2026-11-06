@@ -20,6 +20,7 @@ import urllib.request
 from pathlib import Path
 
 from artifactory.acceptance import AcceptanceTest
+from artifactory.checks.duplication import check_duplication
 from artifactory.checks.process import run
 from artifactory.result import CheckResult, TrialResult
 
@@ -30,7 +31,6 @@ CMD_TIMEOUT_S = 120
 STARTUP_TIMEOUT_S = 10
 REQUEST_TIMEOUT_S = 5
 MAIN_PKG = "./cmd/shortener"
-MAX_LISTED = 10
 
 
 def check_go(project: Path, test: AcceptanceTest, proxy: Path) -> TrialResult:
@@ -125,19 +125,7 @@ def _check_unmodified(project: Path, env: dict, logs: Path) -> CheckResult:
 
 
 def _check_duplication(project: Path, test: AcceptanceTest) -> CheckResult:
-    compiled = {name: [re.compile(p) for p in pats] for name, pats in test.duplication.items()}
-    hits = []
-    for file in sorted(_project_code_files(project)):
-        rel = file.relative_to(project).as_posix()
-        for lineno, line in enumerate(file.read_text(errors="replace").splitlines(), 1):
-            for name, regexes in compiled.items():
-                for rx in regexes:
-                    if rx.search(line):
-                        hits.append(f"{rel}:{lineno} matches {name} pattern {rx.pattern!r}")
-    if hits:
-        more = f" (+{len(hits) - MAX_LISTED} more)" if len(hits) > MAX_LISTED else ""
-        return CheckResult("no_duplication", False, "; ".join(hits[:MAX_LISTED]) + more)
-    return CheckResult("no_duplication", True, "no duplication patterns in project code")
+    return check_duplication(project, _project_code_files(project), test.duplication)
 
 
 def _project_code_files(project: Path):

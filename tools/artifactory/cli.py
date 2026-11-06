@@ -19,13 +19,26 @@ def cmd_check(args) -> int:
             return 2
         from .checks.go import check_go
         result = check_go(Path(args.project_dir), test, Path(args.proxy))
-    else:
+    elif test.ecosystem == "python":
+        if not args.pyindex:
+            print("check: --pyindex is required for a Python test", file=sys.stderr)
+            return 2
+        if not test.python_app:
+            print(f"check: {args.test_dir}/test.yaml has no python_app", file=sys.stderr)
+            return 2
+        from .checks.python import check_python
+        result = check_python(Path(args.project_dir), test, Path(args.pyindex))
+    elif test.ecosystem == "godot-csharp":
         if not args.mirrors:
             print("check: --mirrors is required for a Godot test", file=sys.stderr)
             return 2
         from .checks.godot import check_godot
         result = check_godot(Path(args.project_dir), test, Path(args.mirrors), args.branch, baseline=args.baseline,
                               arc_base=args.arc_base if args.arc else None)
+    else:
+        print(f"check: no checker for ecosystem {test.ecosystem!r} (known: go, python, godot-csharp)",
+              file=sys.stderr)
+        return 2
     Path(args.output).write_text(result.to_json())
     return 0
 
@@ -116,6 +129,7 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--arc", action="store_true", help="also report arc gate, informationally (Godot)")
     c.add_argument("--arc-base", help="fixture commit arc gate compares against (with --arc)")
     c.add_argument("--proxy", help="file GOPROXY directory (Go)")
+    c.add_argument("--pyindex", help="wheel directory the clean environment installs from (Python)")
     c.add_argument("-o", "--output", required=True)
     c.set_defaults(func=cmd_check)
     r = sub.add_parser("round", help="run one round of sandboxed trials against the local model")

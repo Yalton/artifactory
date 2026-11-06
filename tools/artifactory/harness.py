@@ -512,12 +512,18 @@ def checker_command(trial: Trial, test_dir: Path, ecosystem: str, fixture: Path,
     argv = [sys.executable, "-m", "artifactory.cli", "check", str(Path(test_dir).resolve()), str(trial.project)]
     if ecosystem == "go":
         argv += ["--proxy", str(trial.proxy)]
-    else:
+    elif ecosystem == "python":
+        if trial.pyindex is None:
+            raise ValueError("a Python trial needs a wheel index (pyindex)")
+        argv += ["--pyindex", str(trial.pyindex)]
+    elif ecosystem == "godot-csharp":
         argv += ["--mirrors", str(trial.mirrors), "--branch", branch]
         if baseline:
             argv.append("--baseline")
         if trial.base_commit is not None:
             argv += ["--arc", "--arc-base", trial.base_commit]
+    else:
+        raise ValueError(f"no checker for ecosystem {ecosystem!r}")
     argv += ["-o", str(out)]
     env = _base_env(check_home, trial.bin, None, trial.pyindex)
     env["PATH"] = f"{trial.bin}:/usr/local/bin:/usr/bin"

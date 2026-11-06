@@ -21,4 +21,5 @@ ignore-vcs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+norecursedirs = [".*", "*.egg", "build", "dist", "node_modules", "venv", "data"]  # tests/data holds fixture projects with their own tests
 markers = ["godot: launches dotnet or godot (slow; runs by default)"]
