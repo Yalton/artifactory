@@ -16,4 +16,4 @@ entry:
 liveness: "[json-kv] live"
 docs: README.md
 example: example/main.py
-test: pytest
+test: uv run --isolated --no-project --with . --with pytest pytest -q -p no:cacheprovider
