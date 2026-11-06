@@ -34,6 +34,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -226,6 +227,7 @@ def _base_env(home: Path, bin_dir: Path, proxy: Path | None) -> dict[str, str]:
         "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
         "DOTNET_NOLOGO": "1",
         "GIT_TERMINAL_PROMPT": "0",
+        "OPENCODE_DISABLE_MODELS_FETCH": "1",  # models.dev is out of reach: the sandbox only reaches the model
     }
     if proxy is not None:
         genv = go_env(proxy, home / "go")
@@ -401,8 +403,14 @@ def _unexportable(beads: list[dict]) -> list[str]:
 
 # --- running ---------------------------------------------------------------
 
+def model_endpoint() -> tuple[str, int]:
+    """The llama server as (host, port): the agent sandbox's only network destination."""
+    url = urlsplit(LLAMA_URL)
+    return url.hostname, url.port or (443 if url.scheme == "https" else 80)
+
+
 def agent_command(trial: Trial, argv: list[str]) -> list[str]:
-    return sandbox_command(trial.project, trial.home, trial.ro_binds, argv, trial.env)
+    return sandbox_command(trial.project, trial.home, trial.ro_binds, argv, trial.env, allow=[model_endpoint()])
 
 
 def _run_sandboxed(cmd: list[str], stdout: Path, stderr: Path | None, timeout: float,

@@ -15,6 +15,7 @@ from artifactory.acceptance import load_acceptance
 from artifactory.goproxy import build_goproxy
 from artifactory.harness import RoundResult, prepare_trial, run_trial
 from artifactory.result import CheckResult, TrialResult
+from artifactory.sandbox import allowlist, egress_ruleset, sandbox_command
 
 ROOT = Path(__file__).resolve().parents[2]
 GO_TEST_DIR = ROOT / "tests" / "acceptance" / "go-url-shortener"
@@ -150,6 +151,97 @@ def test_sandbox_cannot_reach_host_loopback(tmp_path):
         r = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip() == "blocked"
+
+
+EGRESS_PROBE = """\
+import socket, sys
+host, port = sys.argv[1], int(sys.argv[2])
+try:
+    socket.create_connection((host, port), timeout=5).close(); print("reached")
+except OSError as e: print("blocked", type(e).__name__)
+"""
+
+
+def _sandbox_run(trial, argv, allow=None):
+    if allow is None:
+        cmd = harness.agent_command(trial, argv)
+    else:
+        cmd = sandbox_command(trial.project, trial.home, trial.ro_binds, argv, trial.env, allow=allow)
+    return subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
+
+
+def _host_reaches(host, port):
+    try:
+        socket.create_connection((host, port), timeout=3).close()
+        return True
+    except OSError:
+        return False
+
+
+def test_sandbox_egress_blocks_internet(tmp_path, monkeypatch):
+    """No route out except the model server: an internet IP, DNS, UDP and IPv6 all fail, and fail fast."""
+    monkeypatch.delenv("ARTIFACTORY_SANDBOX_ALLOW", raising=False)
+    trial = prepare_trial(GO_TEST, "# index", tmp_path / "trial-1", None, None)
+    model_host, _ = harness.model_endpoint()
+    for host, port in (("1.1.1.1", 443), ("8.8.8.8", 53), (model_host, 22), ("2606:4700:4700::1111", 443)):
+        start = time.monotonic()
+        r = _sandbox_run(trial, ["/usr/bin/python3", "-c", EGRESS_PROBE, host, str(port)])
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.startswith("blocked"), (host, port, r.stdout)
+        assert time.monotonic() - start < 30  # rejected, not left to time out
+    udp = ("import socket\n"
+           "s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\n"
+           "try: s.sendto(b'x', ('1.1.1.1', 53)); print('sent')\n"
+           "except OSError: print('blocked')\n")
+    r = _sandbox_run(trial, ["/usr/bin/python3", "-c", udp])
+    assert r.stdout.strip() == "blocked", r.stderr
+    dns = ("import socket\n"
+           "try: socket.getaddrinfo('example.com', 443); print('resolved')\n"
+           "except OSError: print('blocked')\n")
+    r = _sandbox_run(trial, ["/usr/bin/python3", "-c", dns])
+    assert r.stdout.strip() == "blocked", r.stderr
+    # The sandboxed process cannot lift the rules: it has no capabilities over pasta's namespace.
+    r = _sandbox_run(trial, ["/bin/sh", "-c", "nft flush ruleset || ip route add 1.1.1.1 dev lo; "
+                                              "/usr/bin/python3 -c \"$0\" 1.1.1.1 443", EGRESS_PROBE])
+    assert r.stdout.strip().startswith("blocked"), r.stdout + r.stderr
+
+
+def test_sandbox_egress_reaches_model_server(tmp_path, monkeypatch):
+    monkeypatch.delenv("ARTIFACTORY_SANDBOX_ALLOW", raising=False)
+    host, port = harness.model_endpoint()
+    if not _host_reaches(host, port):
+        pytest.skip(f"model server {host}:{port} is not reachable from this host")
+    trial = prepare_trial(GO_TEST, "# index", tmp_path / "trial-1", None, None)
+    r = _sandbox_run(trial, ["/usr/bin/python3", "-c", EGRESS_PROBE, host, str(port)])
+    assert r.stdout.strip() == "reached", r.stdout + r.stderr
+    # The checker's sandbox gets no egress at all.
+    r = _sandbox_run(trial, ["/usr/bin/python3", "-c", EGRESS_PROBE, host, str(port)], allow=[])
+    assert r.stdout.startswith("blocked"), r.stdout + r.stderr
+
+
+def test_sandbox_allowlist_env_adds_endpoints(monkeypatch):
+    monkeypatch.setenv("ARTIFACTORY_SANDBOX_ALLOW", "10.0.0.5:5555, [fd00::1]:443")
+    assert allowlist([("192.168.50.174", 8080)]) == [("192.168.50.174", 8080), ("10.0.0.5", 5555), ("fd00::1", 443)]
+    rules = egress_ruleset(allowlist())
+    assert "ip daddr 10.0.0.5 tcp dport 5555 accept" in rules
+    assert "ip6 daddr fd00::1 tcp dport 443 accept" in rules
+    monkeypatch.setenv("ARTIFACTORY_SANDBOX_ALLOW", "nuget.org:443")
+    with pytest.raises(ValueError):
+        allowlist()
+
+
+@pytest.mark.godot
+def test_godot_build_restores_offline_inside_the_sandbox(tmp_path, monkeypatch):
+    """dotnet build needs no internet: Godot.NET.Sdk and its packages come from the host NuGet cache."""
+    monkeypatch.delenv("ARTIFACTORY_SANDBOX_ALLOW", raising=False)
+    if not harness.NUGET_PACKAGES.is_dir():
+        pytest.skip(f"{harness.NUGET_PACKAGES} is missing")
+    trial = prepare_trial(GO_TEST, "# index", tmp_path / "trial-1", None, None)
+    for f in (Path(__file__).parent / "data" / "godot" / "base").iterdir():
+        shutil.copy(f, trial.project / f.name)
+    r = subprocess.run(harness.agent_command(trial, ["dotnet", "build", "TrialGame.csproj", "-nodeReuse:false"]),
+                       capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=600)
+    assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-2000:]
 
 
 def test_trial_timeout_still_checks(tmp_path, proxy):
