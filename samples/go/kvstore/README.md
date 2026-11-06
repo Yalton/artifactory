@@ -22,7 +22,7 @@ val, found, err := store.Get("key")
 ## Notes
 
 - `PutIfAbsent` never overwrites; use it to claim a key without races.
-- Every write is on disk when the call returns.
+- Every write is fsynced (file, then its directory after the atomic rename) before the call returns.
 - `Open` fails if the file exists but is not valid JSON.
 
 Runnable example: `example/main.go`. Test: `go test ./...`.

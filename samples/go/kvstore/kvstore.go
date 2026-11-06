@@ -36,6 +36,9 @@ func Open(path string) (*Store, error) {
 		if err := json.Unmarshal(b, &s.data); err != nil {
 			return nil, fmt.Errorf("kvstore: %s: %w", path, err)
 		}
+		if s.data == nil { // a file containing `null` decodes to a nil map
+			s.data = map[string]string{}
+		}
 	}
 	return s, nil
 }
@@ -77,13 +80,28 @@ func (s *Store) flush() error {
 		return fmt.Errorf("kvstore: %w", err)
 	}
 	_, werr := tmp.Write(b)
+	serr := tmp.Sync()
 	cerr := tmp.Close()
-	if err := errors.Join(werr, cerr); err != nil {
+	if err := errors.Join(werr, serr, cerr); err != nil {
 		os.Remove(tmp.Name())
 		return fmt.Errorf("kvstore: %w", err)
 	}
 	if err := os.Rename(tmp.Name(), s.path); err != nil {
 		os.Remove(tmp.Name())
+		return fmt.Errorf("kvstore: %w", err)
+	}
+	return syncDir(filepath.Dir(s.path))
+}
+
+// syncDir fsyncs a directory so a completed rename survives a crash.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("kvstore: %w", err)
+	}
+	serr := d.Sync()
+	cerr := d.Close()
+	if err := errors.Join(serr, cerr); err != nil {
 		return fmt.Errorf("kvstore: %w", err)
 	}
 	return nil
