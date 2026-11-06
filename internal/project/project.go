@@ -63,11 +63,15 @@ func Save(dir string, f File) error {
 }
 
 // Detect names the project's ecosystem: go for go.mod, godot-csharp for
-// project.godot. Both or neither is an error.
+// project.godot. Only when neither is present, python for pyproject.toml or
+// requirements.txt (a go or godot project may carry python tooling). Both
+// go.mod and project.godot, or no marker at all, is an error.
 func Detect(dir string) (string, error) {
-	_, goErr := os.Stat(filepath.Join(dir, "go.mod"))
-	_, godotErr := os.Stat(filepath.Join(dir, "project.godot"))
-	hasGo, hasGodot := goErr == nil, godotErr == nil
+	has := func(name string) bool {
+		_, err := os.Stat(filepath.Join(dir, name))
+		return err == nil
+	}
+	hasGo, hasGodot := has("go.mod"), has("project.godot")
 	switch {
 	case hasGo && hasGodot:
 		return "", errors.New("both go.mod and project.godot found; pass --ecosystem")
@@ -75,6 +79,8 @@ func Detect(dir string) (string, error) {
 		return "go", nil
 	case hasGodot:
 		return "godot-csharp", nil
+	case has("pyproject.toml") || has("requirements.txt"):
+		return "python", nil
 	}
-	return "", errors.New("no go.mod or project.godot found; pass --ecosystem")
+	return "", errors.New("no go.mod, project.godot, pyproject.toml or requirements.txt found; pass --ecosystem")
 }

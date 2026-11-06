@@ -34,6 +34,8 @@ With hatchling instead, use `[tool.hatch.build.targets.wheel.force-include]` map
 
 A consumer reads them with `importlib.resources.files("<import_name>") / "module.yaml"`.
 
+The import package is a regular top-level package (with `__init__.py`). Namespace packages are not supported.
+
 Dependencies are bounded ranges in `pyproject.toml` (`httpx>=0.27,<1`). A module never pins its own dependencies exactly.
 
 ## Where modules live

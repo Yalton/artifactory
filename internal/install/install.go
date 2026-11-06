@@ -4,7 +4,6 @@ package install
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,15 +15,15 @@ import (
 	"repo.billbert.co/artifactory/artifactory/internal/descriptor"
 )
 
-// ErrPythonUnsupported is returned where the CLI cannot yet handle python modules.
-var ErrPythonUnsupported = errors.New("python modules are not supported yet by this command")
-
 // Locate finds the installed copy of m in projectDir. For godot-csharp it is
 // addons/<Name>. For go it is the module directory reported by `go list -m`
-// for the module path in the install line.
+// for the module path in the install line. For python it is the import
+// package directory holding module.yaml in the project's .venv, found through
+// importlib.metadata.
 func Locate(projectDir string, m catalog.Module) (string, error) {
 	if m.Ecosystem == descriptor.Python {
-		return "", ErrPythonUnsupported
+		dir, _, err := locatePython(projectDir, m)
+		return dir, err
 	}
 	if m.Ecosystem == descriptor.GodotCSharp {
 		dir := filepath.Join(projectDir, "addons", m.Name)
@@ -69,9 +68,31 @@ func GoModulePath(line string) (string, error) {
 
 // Run executes m.Install with sh -c in projectDir, streaming output to
 // stderr, then reads the installed copy's module.yaml and returns its version.
+// A python module is installed into the project's .venv (see planPython),
+// and its installed module.yaml must name it and the python ecosystem.
 func Run(ctx context.Context, projectDir string, m catalog.Module) (string, error) {
+	return RunProgress(ctx, projectDir, m, nil)
+}
+
+// RunProgress is Run with a progress callback (may be nil), told of steps
+// such as creating a python venv.
+func RunProgress(ctx context.Context, projectDir string, m catalog.Module, say func(string)) (string, error) {
+	if say == nil {
+		say = func(string) {}
+	}
 	if m.Ecosystem == descriptor.Python {
-		return "", ErrPythonUnsupported
+		absDir, err := filepath.Abs(projectDir)
+		if err != nil {
+			return "", err
+		}
+		if err := runPython(ctx, absDir, m, say); err != nil {
+			return "", err
+		}
+		_, d, err := locatePython(absDir, m)
+		if err != nil {
+			return "", fmt.Errorf("installed copy of %s: %w", m.Name, err)
+		}
+		return d.Version, nil
 	}
 	cmd := exec.CommandContext(ctx, "sh", "-c", m.Install)
 	cmd.Dir = projectDir
@@ -91,7 +112,7 @@ func Run(ctx context.Context, projectDir string, m catalog.Module) (string, erro
 }
 
 // Copy is one installed copy of a module. Path is the go module path it was
-// found under; it is empty for godot-csharp.
+// found under; it is empty for godot-csharp and python.
 type Copy struct {
 	Path       string
 	Descriptor descriptor.Descriptor
@@ -116,11 +137,14 @@ type Lookup struct {
 // A godot-csharp module is read from addons/<Name>; a name holding a path
 // separator or ".." is a problem, never joined into a path. A go module is
 // read from the module cache directory of whichever dependency in the build
-// list carries a module.yaml with that name (see goModules). A module.yaml
-// that is present but invalid, or names another module, is a problem.
+// list carries a module.yaml with that name (see goModules). A python module
+// is read from the import package of its distribution in the project's .venv
+// (see installedPython). A module.yaml that is present but invalid, or names
+// another module, is a problem.
 //
 // The error is set only when the go build list cannot be listed at all (go
-// is missing, go.mod is missing or broken); the Lookup is then empty.
+// is missing, go.mod is missing or broken), or for python when .venv/bin/python
+// is missing or fails; the Lookup is then empty.
 func Installed(ctx context.Context, projectDir, ecosystem string, names []string) (Lookup, error) {
 	l := Lookup{Found: map[string]Copy{}, Ambiguous: map[string][]Copy{}, Problems: map[string]string{}}
 	want := map[string]bool{}
@@ -151,6 +175,9 @@ func Installed(ctx context.Context, projectDir, ecosystem string, names []string
 			}
 		}
 		return l, nil
+	}
+	if ecosystem == descriptor.Python {
+		return installedPython(ctx, projectDir, want, l)
 	}
 	mods, err := goModules(ctx, projectDir)
 	if err != nil {
