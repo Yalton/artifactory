@@ -63,18 +63,35 @@ func Save(dir string, f File) error {
 }
 
 // Detect names the project's ecosystem: go for go.mod, godot-csharp for
-// project.godot. Both or neither is an error.
+// project.godot, python for pyproject.toml or requirements.txt. More than one
+// ecosystem, or none, is an error.
 func Detect(dir string) (string, error) {
-	_, goErr := os.Stat(filepath.Join(dir, "go.mod"))
-	_, godotErr := os.Stat(filepath.Join(dir, "project.godot"))
-	hasGo, hasGodot := goErr == nil, godotErr == nil
-	switch {
-	case hasGo && hasGodot:
-		return "", errors.New("both go.mod and project.godot found; pass --ecosystem")
-	case hasGo:
-		return "go", nil
-	case hasGodot:
-		return "godot-csharp", nil
+	has := func(name string) bool {
+		_, err := os.Stat(filepath.Join(dir, name))
+		return err == nil
 	}
-	return "", errors.New("no go.mod or project.godot found; pass --ecosystem")
+	var found, files []string
+	for _, c := range []struct {
+		eco   string
+		files []string
+	}{
+		{"go", []string{"go.mod"}},
+		{"godot-csharp", []string{"project.godot"}},
+		{"python", []string{"pyproject.toml", "requirements.txt"}},
+	} {
+		for _, f := range c.files {
+			if has(f) {
+				found = append(found, c.eco)
+				files = append(files, f)
+				break
+			}
+		}
+	}
+	switch len(found) {
+	case 0:
+		return "", errors.New("no go.mod, project.godot, pyproject.toml or requirements.txt found; pass --ecosystem")
+	case 1:
+		return found[0], nil
+	}
+	return "", fmt.Errorf("found %s; pass --ecosystem", strings.Join(files, " and "))
 }

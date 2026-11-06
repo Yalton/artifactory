@@ -16,7 +16,11 @@ func TestDetect(t *testing.T) {
 	}{
 		{"go", []string{"go.mod"}, "go", false},
 		{"godot", []string{"project.godot"}, "godot-csharp", false},
+		{"pyproject", []string{"pyproject.toml"}, "python", false},
+		{"requirements", []string{"requirements.txt"}, "python", false},
+		{"pyproject and requirements", []string{"pyproject.toml", "requirements.txt"}, "python", false},
 		{"both", []string{"go.mod", "project.godot"}, "", true},
+		{"go and python", []string{"go.mod", "requirements.txt"}, "", true},
 		{"neither", nil, "", true},
 	}
 	for _, tt := range tests {

@@ -315,16 +315,21 @@ func moduleFor(e project.Entry, local install.Lookup, mods []catalog.Module) (m 
 }
 
 // arcEntry maps an installed module's descriptor to its arc registry entry.
-// Godot modules own addons/<Name>; go modules are imported by path.
+// Godot modules own addons/<Name>; go modules are imported by path; python
+// modules by their import package, the first part of entry.
 func arcEntry(m catalog.Module) (arcreg.Entry, error) {
 	d := m.Descriptor
-	if d.Ecosystem == descriptor.Python {
-		return arcreg.Entry{}, install.ErrPythonUnsupported
-	}
 	e := arcreg.Entry{ID: m.Name, Summary: d.Summary, Covers: d.Replaces, Entry: d.Entry}
-	if d.Ecosystem == descriptor.GodotCSharp {
+	switch d.Ecosystem {
+	case descriptor.GodotCSharp:
 		e.Paths = []string{"addons/" + m.Name + "/**"}
-	} else {
+	case descriptor.Python:
+		pkg, err := install.PythonImportName(d.Entry)
+		if err != nil {
+			return arcreg.Entry{}, err
+		}
+		e.Import = pkg
+	default:
 		p, err := install.GoModulePath(d.Install)
 		if err != nil {
 			return arcreg.Entry{}, err

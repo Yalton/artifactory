@@ -7,7 +7,6 @@ import (
 	"repo.billbert.co/artifactory/artifactory/internal/arcreg"
 	"repo.billbert.co/artifactory/artifactory/internal/catalog"
 	"repo.billbert.co/artifactory/artifactory/internal/descriptor"
-	"repo.billbert.co/artifactory/artifactory/internal/install"
 )
 
 func TestArcEntry(t *testing.T) {
@@ -34,6 +33,19 @@ func TestArcEntry(t *testing.T) {
 				Rules: []string{"Print `kit live` at startup."}},
 		},
 		{
+			name: "python imports the entry package",
+			d: descriptor.Descriptor{Name: "rate-limiter", Ecosystem: "python", Summary: "S.", Replaces: []string{"r"},
+				Entry: []string{"rate_limiter.Limiter"}, Liveness: "[rate-limiter] live",
+				Install: `pip install "rate-limiter @ git+ssh://x/rate-limiter.git@v0.1.0"`},
+			want: arcreg.Entry{ID: "rate-limiter", Summary: "S.", Covers: []string{"r"}, Entry: []string{"rate_limiter.Limiter"},
+				Import: "rate_limiter", Rules: []string{"Print `[rate-limiter] live` at startup."}},
+		},
+		{
+			name:    "python without entry",
+			d:       descriptor.Descriptor{Name: "rate-limiter", Ecosystem: "python"},
+			wantErr: true,
+		},
+		{
 			name:    "go with bad install line",
 			d:       descriptor.Descriptor{Name: "kit", Ecosystem: "go", Install: "make"},
 			wantErr: true,
@@ -49,12 +61,5 @@ func TestArcEntry(t *testing.T) {
 				t.Errorf("got %+v\nwant %+v", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestArcEntryPythonUnsupported(t *testing.T) {
-	d := descriptor.Descriptor{Name: "foo", Ecosystem: descriptor.Python, Install: "pip install foo"}
-	if _, err := arcEntry(catalog.Module{Descriptor: d}); err != install.ErrPythonUnsupported {
-		t.Errorf("err = %v, want ErrPythonUnsupported", err)
 	}
 }
