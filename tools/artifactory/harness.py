@@ -42,7 +42,7 @@ import yaml
 from .acceptance import AcceptanceTest, load_acceptance
 from .checks.go import go_env
 from .goproxy import build_goproxy
-from .pyindex import build_backends, build_pyindex, download_wheels, index_env, uv_binary
+from .pyindex import build_pyindex, download_wheels, index_env, standard_wheels, uv_binary
 from .result import CheckResult, TrialResult
 from .sandbox import allowlist, sandbox_command
 
@@ -958,7 +958,7 @@ def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = F
                 shutil.rmtree(pyindex)
             with tempfile.TemporaryDirectory(prefix="pykits-") as tmp:
                 build_pyindex(export_kits(mirrors, test.modules, branch, Path(tmp)), pyindex)
-            download_wheels([*build_backends(), *test.python_wheels], pyindex)
+            download_wheels([*standard_wheels(), *test.python_wheels], pyindex)
 
     out = round_dir(root, test.name, round_no, baseline, roadmap)
     out.mkdir(parents=True, exist_ok=True)

@@ -14,7 +14,7 @@ from artifactory import harness
 from artifactory.acceptance import load_acceptance
 from artifactory.goproxy import build_goproxy
 from artifactory.harness import RoundResult, export_kits, prepare_trial, run_trial
-from artifactory.pyindex import build_backends, build_pyindex, download_wheels
+from artifactory.pyindex import build_pyindex, download_wheels, standard_wheels
 from artifactory.result import CheckResult, TrialResult
 from artifactory.sandbox import allowlist, egress_ruleset, sandbox_command
 
@@ -1189,7 +1189,7 @@ def py_package(root: Path, name: str, version: str, deps: list[str] = (), marker
 
 @pytest.fixture(scope="module")
 def pyindex_wheels(tmp_path_factory):
-    """An index with a hatchling kit, its pinned dependency (a prebuilt wheel) and the build backends.
+    """An index with a hatchling kit, its pinned dependency (a prebuilt wheel) and the standard wheels.
 
     Building and downloading need the host's uv/pip caches or PyPI; without them the tests skip."""
     tmp = tmp_path_factory.mktemp("pyindex")
@@ -1198,7 +1198,7 @@ def pyindex_wheels(tmp_path_factory):
         kit = py_package(tmp / "kit", "stub-kit", "0.1.0", deps=["pinned-dep==1.0"], marker="STUBKIT-ALIVE")
         index = tmp / "index"
         built = build_pyindex([kit], index, wheels=dep)
-        backends = download_wheels(build_backends(), index)
+        backends = download_wheels(standard_wheels(), index)
     except RuntimeError as e:
         pytest.skip(f"host cannot build or download the stub wheels (cold cache or offline?): {e}")
     return index, built, backends
@@ -1206,11 +1206,11 @@ def pyindex_wheels(tmp_path_factory):
 
 def test_pyindex_kits_and_backends_install_in_the_sandbox_with_network_off(tmp_path, pyindex_wheels):
     """pip and uv in a networkless sandbox install a kit and its pinned dependency from the index, and build
-    model-written hatchling and uv_build projects offline from the backends in it."""
+    model-written hatchling and uv_build projects offline from the backends in it, and install pytest."""
     index, built, backends = pyindex_wheels
     assert sorted(w.name for w in built) == ["pinned_dep-1.0-py3-none-any.whl", "stub_kit-0.1.0-py3-none-any.whl"]
     names = {w.name.split("-")[0] for w in backends}
-    assert {"hatchling", "uv_build", "packaging", "pluggy"} <= names, names
+    assert {"pytest", "iniconfig", "hatchling", "uv_build", "packaging", "pluggy"} <= names, names
 
     trial = prepare_trial(GO_TEST, "# index", tmp_path / "trial-1", None, None, pyindex=index)
     assert trial.env["PIP_FIND_LINKS"] == trial.env["UV_FIND_LINKS"] == str(index.resolve())
@@ -1233,6 +1233,9 @@ def test_pyindex_kits_and_backends_install_in_the_sandbox_with_network_off(tmp_p
         "uv init -q --no-workspace --vcs none app && (cd app && uv add -q stub-kit "
         f"&& uv run -q python {imports} > ../uvadd.out)\n"
         "python3 -m venv apip && apip/bin/pip install -q ./app && apip/bin/python -c 'import app'\n"
+        # pytest, as trials use it: pip into a venv, and `uv pip install` then `.venv/bin/python -m pytest`
+        "pipenv/bin/pip install -q pytest && pipenv/bin/python -m pytest --version > pytest-pip.out\n"
+        "uv venv -q .venv && uv pip install -q pytest && .venv/bin/python -m pytest --version > pytest-uv.out\n"
     )
     # No allow list: the sandbox has no network at all.
     cmd = sandbox_command(trial.project, trial.home, trial.ro_binds, ["/bin/sh", "-c", script], trial.env)
@@ -1242,6 +1245,8 @@ def test_pyindex_kits_and_backends_install_in_the_sandbox_with_network_off(tmp_p
         assert (trial.project / out).read_text().split() == ["DEP-ALIVE", "STUBKIT-ALIVE"], out
     for out in ("hatch-pip.out", "hatch-uv.out"):
         assert (trial.project / out).read_text().split() == ["HATCHAPP-ALIVE"], out
+    for out in ("pytest-pip.out", "pytest-uv.out"):
+        assert (trial.project / out).read_text().startswith("pytest "), out
 
 
 def test_pyindex_control_sandbox_reaches_no_pypi(tmp_path):

@@ -4,8 +4,9 @@ Trial sandboxes have no internet, so pip and uv inside them install only from
 this directory. Kit wheels are built on the host with `uv build --wheel` (the
 build backend comes from the host's uv cache or PyPI; the sandbox never builds
 kits). Third-party wheels come in two ways: wheel files copied as they are, and
-requirement specs (a test's `python_wheels`, plus build_backends() so a project
-the model writes with uv_build or hatchling builds offline) that
+requirement specs (a test's `python_wheels`, plus standard_wheels(): pytest, and
+the build backends so a project the model writes with uv_build or hatchling
+builds offline) that
 `download_wheels` resolves with pip on the host, for the sandbox interpreter.
 
 The directory is a pip/uv "find-links" location: wheel files at the top
@@ -58,10 +59,11 @@ def build_pyindex(kit_dirs: list[Path], out: Path, wheels: list[Path] = ()) -> l
     return built
 
 
-def build_backends() -> list[str]:
-    """uv_build in the range `uv init` (this uv) pins, and hatchling with its dependencies."""
+def standard_wheels() -> list[str]:
+    """What every Python trial's index carries (each with its dependencies): pytest, which trials run
+    offline, and the build backends, uv_build in the range `uv init` (this uv) pins and hatchling."""
     major, minor = _uv_version()[:2]
-    return [f"uv_build>={major}.{minor}.0,<{major}.{minor + 1}", "hatchling"]
+    return ["pytest", f"uv_build>={major}.{minor}.0,<{major}.{minor + 1}", "hatchling"]
 
 
 def _uv_version() -> tuple[int, ...]:
