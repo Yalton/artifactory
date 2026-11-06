@@ -109,6 +109,7 @@ class RoundResult:
     time_limit_s: int | None = None
     standard_commit: str | None = None  # REPO HEAD, "-dirty" if the tree had changes; None if git failed
     kits: dict[str, str | None] = field(default_factory=dict)  # module -> mirror main SHA (empty for Go rounds)
+    pyindex_wheels: list[str] = field(default_factory=list)  # wheel filenames of the built index (Python rounds only)
 
     @property
     def passes(self) -> int:
@@ -135,6 +136,7 @@ class RoundResult:
             "time_limit_s": self.time_limit_s,
             "standard_commit": self.standard_commit,
             "kits": self.kits,
+            "pyindex_wheels": self.pyindex_wheels,
             "passes": self.passes,
             "met_bar": self.met_bar,
             "infrastructure_failures": self.infrastructure_failures,
@@ -935,7 +937,7 @@ def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = F
         if missing:
             raise RuntimeError(f"no Go sample module for: {', '.join(missing)}")
         index_md = render_index(build_cli(root), "go", f"dir:{GO_SAMPLES}", sorted(sample_names))
-        proxy = root / "goproxy"
+        proxy = root / "goproxy" / test.name  # per test, so concurrent Go rounds do not clobber each other
         if proxy.exists():
             shutil.rmtree(proxy)
         build_goproxy(_go_sample_dirs(), proxy)
@@ -964,7 +966,8 @@ def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = F
     out.mkdir(parents=True, exist_ok=True)
     result = RoundResult(test.name, round_no, product=product, arc=arc, roadmap=roadmap,
                          time_limit_s=test.time_limit_s, standard_commit=standard_commit(),
-                         kits=kit_commits(mirrors, test.modules) if mirrors is not None else {})
+                         kits=kit_commits(mirrors, test.modules) if mirrors is not None else {},
+                         pyindex_wheels=sorted(w.name for w in pyindex.glob("*.whl")) if pyindex is not None else [])
     for k in range(1, trials + 1):
         tr = run_trial(test, index_md, out / f"trial-{k}", mirrors, proxy, opencode_argv,
                        test_dir=test_dir, branch=branch, baseline=baseline, cli=cli, arc=arc_bin,

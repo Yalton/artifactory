@@ -59,11 +59,17 @@ def build_pyindex(kit_dirs: list[Path], out: Path, wheels: list[Path] = ()) -> l
     return built
 
 
+PYTEST_VERSION = "9.2.0"
+HATCHLING_VERSION = "1.33.0"
+
+
 def standard_wheels() -> list[str]:
     """What every Python trial's index carries (each with its dependencies): pytest, which trials run
-    offline, and the build backends, uv_build in the range `uv init` (this uv) pins and hatchling."""
+    offline, and the build backends, uv_build in the range `uv init` (this uv) pins and hatchling.
+    pytest and hatchling are pinned exactly so rounds are reproducible; bump them deliberately."""
     major, minor = _uv_version()[:2]
-    return ["pytest", f"uv_build>={major}.{minor}.0,<{major}.{minor + 1}", "hatchling"]
+    return [f"pytest=={PYTEST_VERSION}", f"uv_build>={major}.{minor}.0,<{major}.{minor + 1}",
+            f"hatchling=={HATCHLING_VERSION}"]
 
 
 def _uv_version() -> tuple[int, ...]:
