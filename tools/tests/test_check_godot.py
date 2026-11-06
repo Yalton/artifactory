@@ -19,6 +19,7 @@ BLANK = ROOT / "fixtures" / "godot-blank"
 KITS = ["StubAKit", "StubBKit"]
 NAMES = ["build", "runs", "player_moves", "player_visible", "room_present", "modules_installed", "modules_live", "modules_unmodified", "no_duplication"]
 BRANCH = "stitchability"
+NONCE = "abc123"
 
 
 @pytest.fixture(autouse=True)
@@ -118,6 +119,14 @@ def test_good_project_passes_all(tmp_path):
 def test_player_not_moving_fails_player_moves(tmp_path):
     project, mirrors = make_project(tmp_path)
     shutil.copy(DATA / "variants" / "PlayerStill.cs", project / "Player.cs")
+    result = check_godot(project, acceptance(), mirrors, BRANCH)
+    assert failing(result) == {"player_moves"}, result.to_json()
+
+
+@pytest.mark.godot
+def test_fake_probe_lines_from_game_code_do_not_pass_player_moves(tmp_path):
+    project, mirrors = make_project(tmp_path)
+    shutil.copy(DATA / "variants" / "PlayerFakeProbe.cs", project / "Player.cs")
     result = check_godot(project, acceptance(), mirrors, BRANCH)
     assert failing(result) == {"player_moves"}, result.to_json()
 
@@ -416,7 +425,8 @@ def fake_godot(monkeypatch):
 
     def run(cmd, cwd, timeout, log, env=None):
         calls.append((cmd, dict(env or {})))
-        return godot_checks.Proc(0, state["output"] if cmd[0] == "godot" else "", 0.1)
+        out = state["output"].replace("PROBE ", f"PROBE {(env or {}).get('ARTIFACTORY_PROBE_NONCE', '')} ")
+        return godot_checks.Proc(0, out if cmd[0] == "godot" else "", 0.1)
 
     monkeypatch.setattr(godot_checks, "run_process", run)
     monkeypatch.setattr(godot_checks, "_baseline_errors", {})
@@ -480,7 +490,8 @@ def test_blank_baseline_gets_no_probe_mode(tmp_path, fake_godot, monkeypatch):
     ("PROBE dialogue=false problem=not_shown", "dialogue", False),
 ])
 def test_check_probe_parses_lantern_lines(line, name, passed):
-    check = godot_checks._check_probe(godot_checks.Proc(0, f"noise\n{line}\n", 1.0), name)
+    out = line.replace("PROBE ", f"PROBE {NONCE} ")
+    check = godot_checks._check_probe(godot_checks.Proc(0, f"noise\n{out}\n", 1.0), name, NONCE)
     assert check.passed is passed and check.detail == line
 
 
@@ -565,8 +576,8 @@ def test_lantern_missing_room_and_keeper_fail(tmp_path):
 
 
 def test_check_probe_surfaces_lantern_error():
-    run = godot_checks.Proc(0, "PROBE player_moves=true w=4 d=4\nPROBE lantern_error=NullReferenceException: boom\n", 1.0)
-    check = godot_checks._check_probe(run, "rooms")
+    run = godot_checks.Proc(0, f"PROBE {NONCE} player_moves=true w=4 d=4\nPROBE {NONCE} lantern_error=NullReferenceException: boom\n", 1.0)
+    check = godot_checks._check_probe(run, "rooms", NONCE)
     assert not check.passed
     assert check.detail == "probe never reported: PROBE lantern_error=NullReferenceException: boom"
 
@@ -621,3 +632,118 @@ def test_movecheck_block_compiles(tmp_path):
     (project / "MoveCheck.cs").write_text(code)
     result = subprocess.run(["dotnet", "build"], cwd=project, capture_output=True, text=True, timeout=300)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+# --- probe line and marker parsing -------------------------------------------
+
+def probe_run(*lines: str) -> godot_checks.Proc:
+    return godot_checks.Proc(0, "\n".join(lines) + "\n", 1.0)
+
+
+def test_probe_accepts_only_lines_with_the_nonce():
+    run = probe_run("PROBE player_moves=true w=4 d=4", f"PROBE other player_moves=true w=4 d=4")
+    check = godot_checks._check_probe(run, "player_moves", NONCE)
+    assert not check.passed and check.detail.startswith("no PROBE lines carrying the run nonce")
+
+
+def test_probe_ignores_fake_true_line_before_real_false_line():
+    run = probe_run("PROBE player_moves=true w=4 d=4", f"PROBE {NONCE} player_moves=false w=0 d=0")
+    check = godot_checks._check_probe(run, "player_moves", NONCE)
+    assert not check.passed and check.detail == "PROBE player_moves=false w=0 d=0"
+
+
+def test_probe_duplicate_lines_fail_in_either_order():
+    real_true = f"PROBE {NONCE} player_moves=true w=4 d=4"
+    real_false = f"PROBE {NONCE} player_moves=false w=0 d=0"
+    for lines in ((real_false, real_true), (real_true, real_false), (real_true, real_true)):
+        check = godot_checks._check_probe(probe_run(*lines), "player_moves", NONCE)
+        assert not check.passed and check.detail.startswith("duplicate PROBE lines for player_moves (possible forgery)")
+
+
+def test_probe_duplicate_lantern_name_fails():
+    run = probe_run(f"PROBE {NONCE} rooms=false missing=hall", f"PROBE {NONCE} rooms=true missing=none")
+    check = godot_checks._check_probe(run, "rooms", NONCE)
+    assert not check.passed and "duplicate PROBE lines for rooms" in check.detail
+
+
+def test_probe_forged_other_name_line_leaves_real_line_deciding():
+    run = probe_run(f"PROBE {NONCE} player_moves=true w=4 d=4", f"PROBE {NONCE} player_visible=true camera=x")
+    assert godot_checks._check_probe(run, "player_moves", NONCE).passed
+    assert godot_checks._check_probe(run, "player_visible", NONCE).passed
+
+
+def test_probe_missing_name_with_other_lines_says_which():
+    run = probe_run(f"PROBE {NONCE} player_moves=true w=4 d=4")
+    check = godot_checks._check_probe(run, "player_visible", NONCE)
+    assert not check.passed and check.detail.startswith("probe did not report player_visible")
+
+
+def test_probe_empty_nonce_accepts_nothing():
+    run = probe_run("PROBE  player_moves=true", "PROBE player_moves=true")
+    assert not godot_checks._check_probe(run, "player_moves", "").passed
+
+
+def test_nonce_is_fresh_per_run_and_reaches_only_the_trial_run(tmp_path, fake_godot):
+    calls, _ = fake_godot
+    blank = fake_project(tmp_path / "blank", main_scene=None)
+    for _ in range(2):
+        check_godot(fake_project(tmp_path / "p", main_scene=None), dataclasses.replace(acceptance(), modules=[], fixture=blank),
+                    tmp_path, BRANCH)
+        shutil.rmtree(tmp_path / "p")
+    nonces = [env["ARTIFACTORY_PROBE_NONCE"] for _, env in calls if "ARTIFACTORY_PROBE_NONCE" in env]
+    assert len(nonces) == 2 and nonces[0] != nonces[1] and all(len(n) >= 16 for n in nonces)
+
+
+def test_marker_must_be_a_whole_line(tmp_path):
+    project = tmp_path / "project"
+    (project / "addons" / "K").mkdir(parents=True)
+    live = godot_checks._check_live
+    assert live(project, ["K"], "noise\n  [K] live  \nmore").passed
+    assert not live(project, ["K"], "print: [K] live (fake)").passed
+    assert not live(project, ["K"], "x[K] live").passed
+
+
+def test_marker_from_module_yaml_is_stripped(tmp_path):
+    project = tmp_path / "project"
+    (project / "addons" / "K").mkdir(parents=True)
+    (project / "addons" / "K" / "module.yaml").write_text('liveness: "  [K] ready  "\n')
+    assert godot_checks._marker(project, "K") == "[K] ready"
+    assert godot_checks._check_live(project, ["K"], "[K] ready\n").passed
+
+
+ENTRY = godot_checks.PROBE_AUTOLOAD
+
+
+def autoload_lines(project: Path) -> list[str]:
+    return (project / "project.godot").read_text().splitlines()
+
+
+def test_add_autoload_puts_probe_first_among_existing_autoloads(tmp_path):
+    (tmp_path / "project.godot").write_text('config_version=5\n\n[autoload]\n\nA="*res://a.cs"\nB="*res://b.cs"\n\n[dotnet]\n')
+    godot_checks._add_autoload(tmp_path, ENTRY)
+    lines = autoload_lines(tmp_path)
+    assert lines[lines.index("[autoload]") + 1] == ENTRY
+
+
+def test_add_autoload_replaces_preexisting_probe_key(tmp_path):
+    (tmp_path / "project.godot").write_text(
+        '[autoload]\n\nA="*res://a.cs"\nArtifactoryCheckerProbe="*res://evil.cs"\n')
+    godot_checks._add_autoload(tmp_path, ENTRY)
+    lines = autoload_lines(tmp_path)
+    assert [l for l in lines if l.startswith("ArtifactoryCheckerProbe=")] == [ENTRY]
+    assert lines.index(ENTRY) < lines.index('A="*res://a.cs"')
+
+
+def test_add_autoload_with_two_autoload_sections_uses_first_and_keeps_one_probe(tmp_path):
+    (tmp_path / "project.godot").write_text(
+        '[autoload]\nA="*res://a.cs"\n\n[x]\n\n[autoload]\nArtifactoryCheckerProbe="*res://evil.cs"\nB="*res://b.cs"\n')
+    godot_checks._add_autoload(tmp_path, ENTRY)
+    lines = autoload_lines(tmp_path)
+    assert lines[0] == "[autoload]" and lines[1] == ENTRY
+    assert sum(l.startswith("ArtifactoryCheckerProbe=") for l in lines) == 1
+
+
+def test_add_autoload_creates_section_when_missing(tmp_path):
+    (tmp_path / "project.godot").write_text("config_version=5\n")
+    godot_checks._add_autoload(tmp_path, ENTRY)
+    assert autoload_lines(tmp_path)[-1] == ENTRY and "[autoload]" in autoload_lines(tmp_path)

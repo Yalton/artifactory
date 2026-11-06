@@ -25,9 +25,31 @@ public partial class CheckerProbe : Node
     private string _unseenStart = "";
     private string _roomMissing = "";
     private bool _lantern;
+    // Per-run secret from the checker. Every PROBE line carries it, and the checker ignores PROBE
+    // lines without it, so game code cannot fake a result by printing one.
+    private string _nonce = "";
+
+    // This autoload is the first in [autoload], so its _Ready reads and unsets the variable before
+    // any other autoload's or scene's _Ready. Residual risks:
+    //  - Code that runs earlier than this _Ready can still read the variable: other autoloads'
+    //    constructors and field initializers (all autoloads are instantiated before any _Ready),
+    //    C# static and module initializers, and /proc/self/environ.
+    //  - Game code can watch the output with OS.AddLogger and print a PROBE line with the nonce
+    //    after seeing the real one. The checker mitigates this: it fails a check that has more
+    //    than one nonce-carrying line.
+    private void TakeNonce()
+    {
+        _nonce = OS.GetEnvironment("ARTIFACTORY_PROBE_NONCE");
+        OS.UnsetEnvironment("ARTIFACTORY_PROBE_NONCE");  // the native environment (what OS.GetEnvironment reads)
+        // .NET keeps its own snapshot of the environment, which unsetenv does not touch.
+        System.Environment.SetEnvironmentVariable("ARTIFACTORY_PROBE_NONCE", null);
+    }
+
+    private void Probe(string line) => GD.Print($"PROBE {_nonce} {line}");
 
     public override void _Ready()
     {
+        TakeNonce();
         ProcessMode = ProcessModeEnum.Always;
         _start = Time.GetTicksMsec();
         _lantern = OS.GetEnvironment("ARTIFACTORY_PROBE_MODE") == "lantern";
@@ -111,14 +133,14 @@ public partial class CheckerProbe : Node
                 if (!await ChangeTo($"res://rooms/{room}.tscn") || GetTree().GetNodesInGroup("player").Count == 0)
                     missing.Add(room);
             }
-            GD.Print($"PROBE rooms={Bool(missing.Count == 0)} missing={(missing.Count == 0 ? "none" : string.Join(",", missing))}");
+            Probe($"rooms={Bool(missing.Count == 0)} missing={(missing.Count == 0 ? "none" : string.Join(",", missing))}");
 
             string problem = await Dialogue();
-            GD.Print($"PROBE dialogue={Bool(problem == null)} problem={problem ?? "none"}");
+            Probe($"dialogue={Bool(problem == null)} problem={problem ?? "none"}");
         }
         catch (Exception e)
         {
-            GD.Print($"PROBE lantern_error={e.GetType().Name}: {e.Message}");
+            Probe($"lantern_error={e.GetType().Name}: {e.Message}");
         }
         finally
         {
@@ -256,9 +278,9 @@ public partial class CheckerProbe : Node
     {
         if (!Valid())
         {
-            GD.Print($"PROBE player_moves=false w=0 d=0 problem={_problem}");
-            GD.Print($"PROBE player_visible=false problem={_problem}");
-            if (!_lantern) GD.Print($"PROBE room_present=false problem={_problem}");
+            Probe($"player_moves=false w=0 d=0 problem={_problem}");
+            Probe($"player_visible=false problem={_problem}");
+            if (!_lantern) Probe($"room_present=false problem={_problem}");
             return;
         }
         Vector3 w = _p1 - _p0;
@@ -267,15 +289,15 @@ public partial class CheckerProbe : Node
             && (w.Normalized() - d.Normalized()).Length() > 0.1f;
         string ws = w.Length().ToString("0.###", CultureInfo.InvariantCulture);
         string ds = d.Length().ToString("0.###", CultureInfo.InvariantCulture);
-        GD.Print($"PROBE player_moves={(differ ? "true" : "false")} w={ws} d={ds}");
+        Probe($"player_moves={(differ ? "true" : "false")} w={ws} d={ds}");
         string end = Unseen();
         bool seen = _unseenStart == "" && end == "";
         Camera3D cam = GetViewport().GetCamera3D();
         string camName = cam == null ? "none" : cam.Name.ToString();
-        GD.Print($"PROBE player_visible={(seen ? "true" : "false")} camera={camName} start={Label(_unseenStart)} end={Label(end)}");
+        Probe($"player_visible={(seen ? "true" : "false")} camera={camName} start={Label(_unseenStart)} end={Label(end)}");
         if (_lantern) return;
-        GD.Print(_roomMissing == "" ? "PROBE room_present=true"
-            : $"PROBE room_present=false missing={_roomMissing}");
+        Probe(_roomMissing == "" ? "room_present=true"
+            : $"room_present=false missing={_roomMissing}");
     }
 
     // How far below the player a floor, and how far around it a wall, may be.
