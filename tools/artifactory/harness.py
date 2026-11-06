@@ -937,7 +937,7 @@ def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = F
         if missing:
             raise RuntimeError(f"no Go sample module for: {', '.join(missing)}")
         index_md = render_index(build_cli(root), "go", f"dir:{GO_SAMPLES}", sorted(sample_names))
-        proxy = root / "goproxy"
+        proxy = root / "goproxy" / test.name  # per test, so concurrent Go rounds do not clobber each other
         if proxy.exists():
             shutil.rmtree(proxy)
         build_goproxy(_go_sample_dirs(), proxy)

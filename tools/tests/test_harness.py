@@ -1339,3 +1339,15 @@ def test_pyindex_round_uses_a_per_test_directory_and_test_wheels(tmp_path, monke
     assert result.pyindex_wheels == wheels
     recorded = json.loads(next((tmp_path / "res").rglob("round.json")).read_text())
     assert recorded["pyindex_wheels"] == wheels
+
+
+def test_go_round_uses_a_per_test_goproxy_directory(tmp_path, monkeypatch):
+    """Concurrent Go rounds under one results root must not delete each other's proxy."""
+    calls = {}
+    monkeypatch.setattr(harness, "build_cli", lambda root: tmp_path / "cli")
+    monkeypatch.setattr(harness, "render_index", lambda *a: "# index")
+    monkeypatch.setattr(harness, "build_goproxy", lambda dirs, out: calls.update(out=out))
+    monkeypatch.setattr(harness, "run_trial", lambda *a, **k: calls.update(proxy=a[4]) or TrialResult(
+        test=GO_TEST.name, trial="trial-1", checks=[], reason=None))
+    harness.run_round(GO_TEST_DIR, 1, trials=1, results_root=tmp_path / "res")
+    assert calls["out"] == calls["proxy"] == (tmp_path / "res" / "goproxy" / GO_TEST.name).resolve()
