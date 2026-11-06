@@ -512,6 +512,7 @@ class RoadmapOutcome:
     roadmap_failed: bool = False  # ornith wrote no beads; the build was one session with the brief
     loop_stalled: bool = False    # STALL_RUN quick sessions in a row with no bead status change
     bd_error: str | None = None   # host-side bd failed (say the agent broke .beads); the loop stopped there
+    export_error: str | None = None  # the final export failed after a bd_error; counts then read 0
 
 
 @dataclass
@@ -687,10 +688,16 @@ def run_agent(trial: Trial, test: AcceptanceTest, opencode_argv: list[str] | Non
                 sessions.run(test.prompt)
         else:
             bead_loop(trial, sessions, out)
-        final = _export(trial, trial.dir / "beads-final.jsonl")
     except (RuntimeError, ValueError, OSError) as e:
         out.bd_error = str(e)
+    try:  # also after a bd_error: whatever beads are readable still count
+        final = _export(trial, trial.dir / "beads-final.jsonl")
+    except (RuntimeError, ValueError, OSError) as e:
         final = []
+        if out.bd_error is None:
+            out.bd_error = str(e)
+        else:
+            out.export_error = str(e)
     out.beads = len(final)
     out.closed = sum(b.get("status") == "closed" for b in final)
     out.blocked = sum(b.get("status") == "blocked" for b in final)

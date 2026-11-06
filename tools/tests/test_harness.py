@@ -861,6 +861,31 @@ def test_bead_loop_failures_beyond_runtime_error_are_recorded_as_bd_error(tmp_pa
     assert out.bd_error == str(exc) and out.beads == 0
 
 
+def test_final_export_is_attempted_after_a_bd_error(tmp_path, monkeypatch):
+    trial = prepare_trial(GO_TEST, "# index", tmp_path / "trial-1", None, None)
+    def boom(*a, **k):
+        raise RuntimeError("bd broke")
+    monkeypatch.setattr(harness, "bead_loop", boom)
+    monkeypatch.setattr(harness, "_export", lambda trial, dest: [{"status": "closed"}, {"status": "open"}])
+    test = dataclasses.replace(LANTERN, time_limit_s=30)
+    out = harness.run_agent(trial, test, fake_agent("true"), "frontier").outcome
+    assert out.bd_error == "bd broke" and out.export_error is None
+    assert (out.beads, out.closed) == (2, 1)
+
+
+def test_failed_final_export_does_not_mask_the_bd_error(tmp_path, monkeypatch):
+    trial = prepare_trial(GO_TEST, "# index", tmp_path / "trial-1", None, None)
+    def boom(*a, **k):
+        raise RuntimeError("bd broke")
+    def no_export(trial, dest):
+        raise RuntimeError("export broke")
+    monkeypatch.setattr(harness, "bead_loop", boom)
+    monkeypatch.setattr(harness, "_export", no_export)
+    test = dataclasses.replace(LANTERN, time_limit_s=30)
+    out = harness.run_agent(trial, test, fake_agent("true"), "frontier").outcome
+    assert out.bd_error == "bd broke" and out.export_error == "export broke" and out.beads == 0
+
+
 def test_export_failure_after_the_writing_phase_falls_back_to_the_brief(tmp_path, monkeypatch):
     trial = prepare_trial(GO_TEST, "# index", tmp_path / "trial-1", None, None)
     calls = []
