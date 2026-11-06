@@ -103,6 +103,8 @@ class RoundResult:
     arc: bool = False
     roadmap: str = "none"
     time_limit_s: int | None = None
+    standard_commit: str | None = None  # REPO HEAD, "-dirty" if the tree had changes; None if git failed
+    kits: dict[str, str | None] = field(default_factory=dict)  # module -> mirror main SHA (empty for Go rounds)
 
     @property
     def passes(self) -> int:
@@ -124,6 +126,8 @@ class RoundResult:
             "arc": self.arc,
             "roadmap": self.roadmap,
             "time_limit_s": self.time_limit_s,
+            "standard_commit": self.standard_commit,
+            "kits": self.kits,
             "passes": self.passes,
             "met_bar": self.met_bar,
             "infrastructure_failures": self.infrastructure_failures,
@@ -817,6 +821,27 @@ def _go_sample_dirs() -> list[Path]:
     return sorted(d for d in GO_SAMPLES.iterdir() if (d / "go.mod").is_file())
 
 
+def _git_out(repo: Path, *args: str) -> str | None:
+    try:
+        r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def standard_commit() -> str | None:
+    """HEAD of the repo the harness runs from; '-dirty' suffix when the working tree has changes."""
+    head = _git_out(REPO, "rev-parse", "HEAD")
+    status = _git_out(REPO, "status", "--porcelain")
+    if not head or status is None:
+        return None
+    return head + ("-dirty" if status else "")
+
+
+def kit_commits(mirrors: Path, modules: list[str]) -> dict[str, str | None]:
+    return {m: _git_out(mirrors / f"{m}.git", "rev-parse", "refs/heads/main") for m in modules}
+
+
 def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = False, *,
               results_root: Path | None = None, opencode_argv: list[str] | None = None,
               product: bool = False, arc: bool = False, arc_src: Path | None = None,
@@ -872,7 +897,8 @@ def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = F
     out = round_dir(root, test.name, round_no, baseline, roadmap)
     out.mkdir(parents=True, exist_ok=True)
     result = RoundResult(test.name, round_no, product=product, arc=arc, roadmap=roadmap,
-                         time_limit_s=test.time_limit_s)
+                         time_limit_s=test.time_limit_s, standard_commit=standard_commit(),
+                         kits=kit_commits(mirrors, test.modules) if mirrors is not None else {})
     for k in range(1, trials + 1):
         tr = run_trial(test, index_md, out / f"trial-{k}", mirrors, proxy, opencode_argv,
                        test_dir=test_dir, branch=branch, baseline=baseline, cli=cli, arc=arc_bin,
