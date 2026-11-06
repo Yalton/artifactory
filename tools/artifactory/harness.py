@@ -961,12 +961,8 @@ def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = F
         else:
             index_md = render_index(build_cli(root), test.ecosystem, f"dir:{mirrors}", test.modules)
         if test.ecosystem == "python":
-            pyindex = root / "pyindex" / test.name  # per test, so rounds of different tests keep their own
-            if pyindex.exists():
-                shutil.rmtree(pyindex)
-            with tempfile.TemporaryDirectory(prefix="pykits-") as tmp:
-                build_pyindex(export_kits(mirrors, test.modules, branch, Path(tmp)), pyindex)
-            download_wheels([*standard_wheels(), *test.python_wheels], pyindex)
+            # per test, so rounds of different tests keep their own
+            pyindex = build_python_index(mirrors, test, branch, root / "pyindex" / test.name)
 
     out = round_dir(root, test.name, round_no, baseline, roadmap)
     out.mkdir(parents=True, exist_ok=True)
@@ -982,6 +978,17 @@ def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = F
         (out / "round.json").write_text(result.to_json())
     (out / "round.json").write_text(result.to_json())
     return result
+
+
+def build_python_index(mirrors: Path, test: AcceptanceTest, branch: str, dest: Path) -> Path:
+    """A Python round's wheel index at `dest` (replaced if present): each kit built from `branch` of its
+    mirror, plus the standard wheels and the test's python_wheels."""
+    if dest.exists():
+        shutil.rmtree(dest)
+    with tempfile.TemporaryDirectory(prefix="pykits-") as tmp:
+        build_pyindex(export_kits(mirrors, test.modules, branch, Path(tmp)), dest)
+    download_wheels([*standard_wheels(), *test.python_wheels], dest)
+    return dest
 
 
 def export_kits(mirrors: Path, modules: list[str], branch: str, dest: Path) -> list[Path]:

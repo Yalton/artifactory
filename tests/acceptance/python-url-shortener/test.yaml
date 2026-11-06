@@ -1,0 +1,13 @@
+name: python-url-shortener
+ecosystem: python
+fixture: ../../../fixtures/python-blank
+prompt: prompt.md
+time_limit_s: 2700
+modules:
+  - env-settings
+  - json-kv
+  - http-runner
+python_app: shortener
+app_port: 8080
+# The kits use the standard library only, so the index needs no third-party wheels.
+python_wheels: []

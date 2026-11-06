@@ -1,0 +1,22 @@
+# Regexes matched against project code outside installed modules and the top-level tests/.
+# The request handler class (BaseHTTPRequestHandler), routing on self.path, json.loads and
+# json.dumps of request and response bodies, and short-code generation (secrets, random:
+# the app's own gap, no kit covers it) are needed glue and are deliberately not matched.
+env-settings:
+  - 'os\.environ'
+  - '\bgetenv\('
+  - '^\s*from\s+os\s+import\s+.*\b(environ|getenv)\b'
+json-kv:
+  - 'json\.load\('
+  - 'json\.dump\('
+  - 'os\.(replace|rename)\('
+  - '\.(write_text|write_bytes|read_text|read_bytes)\('
+  - '(?<!json_kv\.)\bopen\(([^)]*,\s*)?(mode\s*=\s*)?["''][rwax]b?\+?["'']'
+  - '^\s*(import|from)\s+(sqlite3|shelve|pickle|dbm|tempfile)\b'
+http-runner:
+  - 'HTTPServer\('
+  - 'serve_forever\('
+  - '^\s*(import|from)\s+socketserver\b'
+  - 'signal\.signal\('
+  - '\.shutdown\(\)'
+  - '["'']/healthz'
