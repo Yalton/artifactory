@@ -9,6 +9,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -47,7 +48,11 @@ func New(a app.App, projectDir string) *mcp.Server {
 		Name:        "search",
 		Description: "Rank catalog modules against a free-text query. No hits means a gap.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in SearchInput) (*mcp.CallToolResult, any, error) {
-		res, err := a.Search(ctx, "", projectDir, strings.Fields(in.Query), in.Ecosystem)
+		words := strings.Fields(in.Query)
+		if len(words) == 0 {
+			return toolError("search: query is empty; give words describing the capability you need")
+		}
+		res, err := a.Search(ctx, "", projectDir, words, in.Ecosystem)
 		return reply(res, err)
 	})
 
@@ -55,6 +60,9 @@ func New(a app.App, projectDir string) *mcp.Server {
 		Name:        "show",
 		Description: "Show one module's descriptor and its README at the latest tag.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in ShowInput) (*mcp.CallToolResult, any, error) {
+		if strings.TrimSpace(in.Name) == "" {
+			return toolError("show: name is empty")
+		}
 		res, err := a.Show(ctx, "", projectDir, in.Name)
 		return reply(res, err)
 	})
@@ -63,6 +71,14 @@ func New(a app.App, projectDir string) *mcp.Server {
 		Name:        "install",
 		Description: "Run each module's install line in the project, record it in artifactory.yaml and re-index. Modifies the project.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in InstallInput) (*mcp.CallToolResult, any, error) {
+		if len(in.Names) == 0 {
+			return toolError("install: names is empty; give at least one module name")
+		}
+		for _, n := range in.Names {
+			if strings.TrimSpace(n) == "" {
+				return toolError("install: names contains an empty name")
+			}
+		}
 		res, err := a.Install(ctx, projectDir, in.Names, nil)
 		return reply(res, err)
 	})
@@ -97,6 +113,11 @@ func reply(v any, err error) (*mcp.CallToolResult, any, error) {
 		Content:           []mcp.Content{&mcp.TextContent{Text: string(b)}},
 		StructuredContent: structured,
 	}, nil, nil
+}
+
+// toolError rejects a call's arguments as a tool error.
+func toolError(msg string) (*mcp.CallToolResult, any, error) {
+	return reply(nil, errors.New(msg))
 }
 
 // Run serves the tools over stdio until the client disconnects.
