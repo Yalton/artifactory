@@ -793,6 +793,39 @@ def test_round_time_limit_overrides_test_yaml_and_is_recorded(tmp_path, monkeypa
         harness.run_round(ROOT / "tests" / "acceptance" / "godot-capsule-room", 2, trials=1, results_root=tmp_path, time_limit_s=0)
 
 
+def _bare_mirror(path, branch="main"):
+    work = path.parent / (path.name + "-work")
+    subprocess.run(["git", "init", "-q", "-b", branch, str(work)], check=True)
+    subprocess.run(["git", "-C", str(work), "-c", "user.name=t", "-c", "user.email=t@t",
+                    "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+    subprocess.run(["git", "clone", "-q", "--bare", str(work), str(path)], check=True)
+    return subprocess.run(["git", "-C", str(work), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def test_round_records_standard_commit_and_kit_commits(tmp_path, monkeypatch):
+    monkeypatch.setattr(harness, "run_trial", lambda test, *a, **k: TrialResult(test.name, "trial", reason="timeout"))
+    monkeypatch.setattr(harness, "build_cli", lambda root: root / "artifactory")
+    monkeypatch.setattr(harness, "render_index", lambda *a: "# index")
+    shas = {m: _bare_mirror(tmp_path / "mirrors" / f"{m}.git") for m in GODOT_TEST.modules}
+    result = harness.run_round(ROOT / "tests" / "acceptance" / "godot-capsule-room", 1, trials=1, results_root=tmp_path)
+    data = json.loads((tmp_path / GODOT_TEST.name / "round-1" / "round.json").read_text())
+    assert data["kits"] == shas == result.kits
+    head = subprocess.run(["git", "-C", str(harness.REPO), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    assert data["standard_commit"] in (head, head + "-dirty")
+
+
+def test_standard_commit_is_none_when_git_fails(monkeypatch):
+    monkeypatch.setattr(harness, "REPO", Path("/nonexistent-dir-for-test"))
+    assert harness.standard_commit() is None
+
+
+def test_cli_round_value_error_is_a_clean_exit_1(capsys):
+    from artifactory.cli import main
+    code = main(["round", str(ROOT / "tests" / "acceptance" / "godot-capsule-room"), "--time-limit-s", "0"])
+    assert code == 1
+    assert "artifactory round: --time-limit-s must be positive" in capsys.readouterr().err
+
+
 def test_cli_round_roadmap_choices():
     from artifactory.cli import main
     with pytest.raises(SystemExit):
