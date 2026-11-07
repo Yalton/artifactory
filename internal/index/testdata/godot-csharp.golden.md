@@ -419,6 +419,7 @@ Use instead of writing:
 - save file versioning and migration
 - recovering from a corrupt or missing save
 - encrypting a save file
+- continuing the last saved game from a title screen
 
 ```
 git submodule add git@repo.billbert.co:artifactory/RunSaveKit.git addons/RunSaveKit
@@ -432,7 +433,7 @@ Use instead of writing:
 - an options menu backend for volume, resolution and graphics
 - saving and loading a settings config file
 - creating Music/SFX/Ambience audio buses
-- graphics quality presets
+- graphics quality presets, a fullscreen toggle and vsync
 - mouse sensitivity and FOV settings
 
 ```

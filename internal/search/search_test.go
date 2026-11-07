@@ -122,9 +122,10 @@ func TestRankKits(t *testing.T) {
 		{"debug logging", "DebugLogKit"},
 		{"log room changes", "DebugLogKit"},
 		{"save player position", "RunSaveKit"},
-		// A word a summary uses in passing is not enough on its own.
-		{"fullscreen toggle", ""},
-		{"continue last game", ""},
+		{"fullscreen toggle", "SettingsKit"},
+		{"continue last game", "RunSaveKit"},
+		// No kit owns a pause menu; it is a gap.
+		{"pause menu", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.query, func(t *testing.T) {
