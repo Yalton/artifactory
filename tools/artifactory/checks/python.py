@@ -277,7 +277,12 @@ def _health(port: int) -> int | str:
         conn = http.client.HTTPConnection(host, port, timeout=REQUEST_TIMEOUT_S)
         try:
             conn.request("GET", "/healthz")
-            return conn.getresponse().status
+            resp = conn.getresponse()
+            try:  # closing with the body unread resets a keep-alive server, which logs a traceback
+                resp.read(65536)
+            except (OSError, http.client.HTTPException):
+                pass
+            return resp.status
         except (OSError, http.client.HTTPException) as e:
             why = f"{type(e).__name__}: {e}"
         finally:

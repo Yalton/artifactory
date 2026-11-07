@@ -8,6 +8,8 @@ After installing, read each module's README before coding. Its Wiring section is
 
 When `PIP_FIND_LINKS` or `UV_FIND_LINKS` is set (offline use), install each module as `<name>==<version>` with `uv add` or `pip install`. They read the setting from the environment. Never use the git URL then.
 
+Never write code a module already does, not even as a fallback or a default. If a module answers `/healthz`, add no `/healthz` route. If a module reads `os.environ` by default, do not pass it `os.environ`; pass a mapping only to give it other values, as a test does.
+
 ### Before finishing
 
 Pin each module as `<name>==<version>` in `requirements.txt` (or `pyproject.toml` with a committed `uv.lock`). Build a clean environment from the pins, check it, and run the tests. Confirm none of them prints an error:
