@@ -1,5 +1,7 @@
 # Roadmap experiment: Lantern Keep, round 10
 
+Round 11 (12-hour trials, one per condition): `results/roadmap/round-11/REPORT.md`.
+
 Design: `docs/superpowers/specs/2026-11-03-roadmap-experiment-design.md`. Bead: Artifactory-5dx.2.
 
 **0 of 9 passed.** No condition finished the game in 4 hours. By pass count the three conditions are tied at zero, a floor that pass counts cannot separate. The checks each trial did pass do separate them:
