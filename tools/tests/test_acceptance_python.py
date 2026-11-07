@@ -23,7 +23,8 @@ TEST_DIR = ROOT / "tests" / "acceptance" / "python-url-shortener"
 ALL_CHECKS = {"install", "modules_pinned", "pip_check", "tests", "app_starts", "modules_installed",
               "modules_live", "modules_unmodified", "no_traceback", "no_duplication"}
 
-REQUIREMENTS = "env-settings==0.1.0\njson-kv==0.1.0\nhttp-runner==0.1.0\n"
+KIT_VERSIONS = {"env-settings": "0.1.0", "json-kv": "0.1.0", "http-runner": "0.1.1"}
+REQUIREMENTS = "".join(f"{m}=={v}\n" for m, v in KIT_VERSIONS.items())
 
 APP = '''\
 """URL shortener: POST /links stores a URL under a random code, GET /<code> redirects to it."""
@@ -161,7 +162,7 @@ def reference_files() -> dict[str, str]:
 
 def own_store_files() -> dict[str, str]:
     files = reference_files()
-    files["requirements.txt"] = "env-settings==0.1.0\nhttp-runner==0.1.0\n"
+    files["requirements.txt"] = "env-settings==0.1.0\nhttp-runner==0.1.1\n"
     files["shortener/store.py"] = OWN_STORE
     files["shortener/app.py"] = (APP.replace("import json_kv\n", "")
                                  .replace("import env_settings\n", "import env_settings\nfrom shortener.store import FileStore\n")
@@ -232,7 +233,7 @@ def test_index_holds_each_kit_wheel(kits):
     assert sorted(names) == sorted(test.modules)
     wheels = {w.name for w in index.glob("*.whl")}
     for m in test.modules:
-        assert f"{m.replace('-', '_')}-0.1.0-py3-none-any.whl" in wheels, wheels
+        assert f"{m.replace('-', '_')}-{KIT_VERSIONS[m]}-py3-none-any.whl" in wheels, wheels
     assert any(w.startswith("pytest-") for w in wheels) and any(w.startswith("uv_build-") for w in wheels)
 
 
@@ -241,7 +242,7 @@ def test_modules_md_renders_from_the_mirrors(kits, tmp_path):
     md = harness.render_index(harness.build_cli(tmp_path), "python", f"dir:{mirrors}", test.modules)
     for m in test.modules:
         assert f"\n## {m}\n" in md
-        assert f'pip install "{m} @ git+ssh://git@repo.billbert.co/artifactory/{m}.git@v0.1.0"' in md
+        assert f'pip install "{m} @ git+ssh://git@repo.billbert.co/artifactory/{m}.git@v{KIT_VERSIONS[m]}"' in md
     # The consumer notes carry the pinning contract, so the prompt does not repeat it.
     assert "Pin each module as `<name>==<version>` in `requirements.txt`" in md
 

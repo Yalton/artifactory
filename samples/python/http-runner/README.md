@@ -2,7 +2,7 @@
 
 Serves your `http.server.BaseHTTPRequestHandler` subclass on a threading server, answers `GET /healthz`, and shuts down gracefully on SIGINT or SIGTERM. `run` handles the signals itself. Do not create `HTTPServer` or `ThreadingHTTPServer`, call `serve_forever` or install signal handlers yourself.
 
-Install: `pip install "http-runner @ git+ssh://git@repo.billbert.co/artifactory/http-runner.git@v0.1.0"` (offline, with `PIP_FIND_LINKS` or `UV_FIND_LINKS` set: `pip install "http-runner==0.1.0"`)
+Install: `pip install "http-runner @ git+ssh://git@repo.billbert.co/artifactory/http-runner.git@v0.1.1"` (offline, with `PIP_FIND_LINKS` or `UV_FIND_LINKS` set: `pip install "http-runner==0.1.1"`)
 
 Importing `http_runner` prints `[http-runner] live` once. There is no setup step.
 
