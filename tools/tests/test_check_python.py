@@ -3,6 +3,10 @@ import shutil
 import zipfile
 import socket
 import subprocess
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -113,6 +117,59 @@ def test_app_that_crashes_fails_app_starts(tmp_path, index):
     result = check_python(project, stub_test(), index)
     assert failing(result) == {"app_starts"}, result.to_json()
     assert "exited 3" in checks(result)["app_starts"].detail
+
+
+def _serve(handler):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    errors = []
+    server.handle_error = lambda request, address: errors.append(sys.exc_info()[1])
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, errors
+
+
+def test_health_probe_does_not_reset_keep_alive_server():
+    # Closing with the body unread resets an HTTP/1.1 server's connection, which it logs as a
+    # ConnectionResetError traceback the app never caused.
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *args):
+            pass
+
+    server, errors = _serve(Handler)
+    try:
+        assert [python_check._health(server.server_port) for _ in range(30)] == [200] * 30
+        time.sleep(0.3)
+    finally:
+        server.shutdown()
+    assert errors == []
+
+
+def test_health_probe_keeps_status_when_body_never_ends(monkeypatch):
+    monkeypatch.setattr(python_check, "REQUEST_TIMEOUT_S", 0.5)
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # HTTP/1.0 reply with no Content-Length, held open
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"o")
+            self.wfile.flush()
+            time.sleep(2)
+
+        def log_message(self, *args):
+            pass
+
+    server, _ = _serve(Handler)
+    try:
+        assert python_check._health(server.server_port) == 200
+    finally:
+        server.shutdown()
 
 
 def test_missing_health_endpoint_fails_app_starts(tmp_path, index, monkeypatch):
