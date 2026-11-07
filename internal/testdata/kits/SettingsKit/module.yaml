@@ -1,12 +1,12 @@
 name: SettingsKit
 ecosystem: godot-csharp
-version: 0.1.0
+version: 0.1.1
 summary: "User settings autoload: audio, video, graphics, accessibility and language, saved to disk."
 replaces:
   - "an options menu backend for volume, resolution and graphics"
   - "saving and loading a settings config file"
   - "creating Music/SFX/Ambience audio buses"
-  - "graphics quality presets"
+  - "graphics quality presets, a fullscreen toggle and vsync"
   - "mouse sensitivity and FOV settings"
 install: "git submodule add git@repo.billbert.co:artifactory/SettingsKit.git addons/SettingsKit"
 setup:
