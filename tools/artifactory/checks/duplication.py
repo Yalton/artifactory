@@ -28,9 +28,11 @@ def check_duplication(project: Path, files: Iterable[Path], duplication: dict[st
                 raise
             hits.append(f"{rel} unreadable ({type(e).__name__})")
             continue
-        lines = text.splitlines()
         if file.suffix == ".py":
-            lines = _blank_python_prose(text, lines)
+            # Split as the tokenizer does (on \n only), so its rows line up with ours.
+            lines = _blank_python_prose(text, [ln.rstrip("\r\n") for ln in io.StringIO(text).readlines()])
+        else:
+            lines = text.splitlines()
         for lineno, line in enumerate(lines, 1):
             for name, regexes in compiled.items():
                 for rx in regexes:
@@ -40,6 +42,12 @@ def check_duplication(project: Path, files: Iterable[Path], duplication: dict[st
         more = f" (+{len(hits) - MAX_LISTED} more)" if len(hits) > MAX_LISTED else ""
         return CheckResult("no_duplication", False, "; ".join(hits[:MAX_LISTED]) + more)
     return CheckResult("no_duplication", True, "no duplication patterns in project code")
+
+
+# f-strings tokenize as FSTRING_START/MIDDLE/END on Python 3.12+; one with a {field} also has
+# OP and NAME tokens, so it is never blanked.
+_STRING_TOKENS = {tokenize.STRING} | {getattr(tokenize, n) for n in ("FSTRING_START", "FSTRING_MIDDLE", "FSTRING_END")
+                                      if hasattr(tokenize, n)}
 
 
 def _blank_python_prose(text: str, lines: list[str]) -> list[str]:
@@ -67,7 +75,7 @@ def _blank_python_prose(text: str, lines: list[str]) -> list[str]:
         if tok.type == tokenize.COMMENT:
             blank(tok)
         if tok.type == tokenize.NEWLINE or tok.type == tokenize.ENDMARKER:
-            if logical and all(t.type == tokenize.STRING for t in logical):
+            if logical and all(t.type in _STRING_TOKENS for t in logical):
                 for t in logical:
                     blank(t)
             logical = []

@@ -45,3 +45,18 @@ def test_untokenizable_file_still_scanned(tmp_path):
 
 def test_other_suffix_keeps_raw_matching(tmp_path):
     assert not scan(tmp_path, "// os.environ\n", name="a.go").passed
+
+
+@pytest.mark.parametrize("sep", ["\x0c", "\x0b", "\x1c", "\x85", " "])
+def test_line_separator_in_prose_does_not_shift_rows(tmp_path, sep):
+    """splitlines() breaks on these but the tokenizer does not; rows must still line up."""
+    (tmp_path / "app.py").write_text(f"# c{sep}d\nfoo = os.environ\n\"\"\"doc\"\"\"\n")
+    result = check_duplication(tmp_path, [tmp_path / "app.py"], {"env-settings": [r"os\.environ"]})
+    assert not result.passed
+    assert "app.py:2 " in result.detail
+
+
+def test_fstring_docstring_is_blanked(tmp_path):
+    (tmp_path / "app.py").write_text('def f():\n    f"""Reads os.environ."""\n    return 1\n')
+    result = check_duplication(tmp_path, [tmp_path / "app.py"], {"env-settings": [r"os\.environ"]})
+    assert result.passed, result.detail
