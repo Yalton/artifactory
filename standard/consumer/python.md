@@ -19,7 +19,15 @@ uv venv --clear && uv pip install -r requirements.txt pytest
 uv pip check && .venv/bin/python -m pytest -q
 ```
 
-Add `.` to the install only if the app has a `pyproject.toml`. Its `[build-system]` must name a backend the wheel directory carries: `uv_build`, exactly as `uv init` writes it, or `hatchling`. setuptools is not there, and `backend-path` never works offline. Otherwise give the app no `[build-system]`, keep only `requirements.txt`, and run `python -m <app>` from the project root. With pip: `python -m venv .venv && .venv/bin/pip install -r requirements.txt pytest && .venv/bin/pip check`.
+Add `.` to the install only if the app has a `pyproject.toml`. Its `[build-system]` must name a backend the wheel directory carries, with both keys. `uv init --package` writes this block, with a version range on `uv_build`, which also works:
+
+```toml
+[build-system]
+requires = ["uv_build"]
+build-backend = "uv_build"
+```
+
+`hatchling` (with `build-backend = "hatchling.build"`) also works. Without `build-backend`, installers fall back to setuptools, which is not there; `backend-path` never works offline. Or give the app no `[build-system]`, keep only `requirements.txt`, and run `python -m <app>` from the project root. With pip: `python -m venv .venv && .venv/bin/pip install -r requirements.txt pytest && .venv/bin/pip check`.
 
 Run the app from `.venv/bin/python`, not `uv run`, so nothing re-locks over the network. Unbuffered output keeps the markers when the app is killed. A server never exits on its own, so start it in the background, wait for `/healthz` to answer 200, then stop it:
 
