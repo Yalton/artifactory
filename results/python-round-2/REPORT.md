@@ -25,3 +25,5 @@ Run: `artifactory round tests/acceptance/python-url-shortener --round 2 --trials
 
 - The health probe reads the response body before closing (`tools/artifactory/checks/python.py`), and still returns the status if that read fails or times out. Tests probe a keep-alive server 30 times and a reply whose body never ends.
 - The consumer notes say never to write code a module already does, not even as a fallback or a default, and name both round 2 cases: no `/healthz` route beside http-runner, and no `os.environ` passed to a module that reads it by default.
+
+Round 3: `results/python-round-3/REPORT.md`.
