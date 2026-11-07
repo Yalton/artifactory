@@ -17,7 +17,7 @@ uv venv --clear && uv pip install -r requirements.txt pytest
 uv pip check && .venv/bin/python -m pytest -q
 ```
 
-Add `.` to the install only if the app has a `pyproject.toml`. Then the wheel directory must also carry its build backend (`uv_build` for a `uv init` project). With pip: `python -m venv .venv && .venv/bin/pip install -r requirements.txt pytest && .venv/bin/pip check`.
+Add `.` to the install only if the app has a `pyproject.toml`. Its `[build-system]` must be `requires = ["uv_build>=X.Y.0,<X.Z"]` with `build-backend = "uv_build"` (the range `uv init` writes; the wheel directory carries no other backend, so no hatchling or setuptools, and never `backend-path`). Otherwise give the app no `[build-system]`, keep only `requirements.txt`, and run `python -m <app>` from the project root. With pip: `python -m venv .venv && .venv/bin/pip install -r requirements.txt pytest && .venv/bin/pip check`.
 
 Run the app from `.venv/bin/python`, not `uv run`, so nothing re-locks over the network. Unbuffered output keeps the markers when the app is killed. A server never exits on its own, so start it in the background, wait for `/healthz` to answer 200, then stop it:
 
