@@ -19,7 +19,7 @@ uv venv --clear && uv pip install -r requirements.txt pytest
 uv pip check && .venv/bin/python -m pytest -q
 ```
 
-Add `.` to the install only if the app has a `pyproject.toml`. Its `[build-system]` must name a backend the wheel directory carries, with both keys. `uv init --package` writes this block, with a version range on `uv_build`, which also works:
+Add `.` to the install only if the app has a `pyproject.toml`. Its `[build-system]` must name a backend the wheel directory carries, with both keys. Write it like this, with a bare `uv_build` and no version range; a range `uv init` writes can miss the version the wheel directory carries:
 
 ```toml
 [build-system]
