@@ -12,6 +12,9 @@ from pathlib import Path
 # opencode names an MCP tool "<server>_<tool>" (both sanitised); the harness configures the server as "artifactory".
 MCP_PREFIX = "artifactory_"
 SHELL_TOOLS = {"shell", "bash"}
+# opencode's code-mode tool: MCP tools are called from JS as tools.<server>.<tool>(...) (seen in the Nov 8 smoke round).
+CODE_TOOL = "execute"
+_CODE_MCP = re.compile(r"\btools\.artifactory\.(\w+)\s*\(")
 # A command word: start of a line, or right after && ; | || or $(.
 _CMD = re.compile(r"(?:^|&&|;|\||\$\()[ \t]*(artifactory|arc)[ \t]+([A-Za-z][\w-]*)", re.M)
 
@@ -41,6 +44,9 @@ def count_tool_use(transcripts: list[Path], proxy: Path | None) -> dict:
         for tool, inp in _calls(t):
             if tool.startswith(MCP_PREFIX):
                 mcp[tool[len(MCP_PREFIX):]] += 1
+            elif tool == CODE_TOOL and isinstance(inp.get("code"), str):
+                for m in _CODE_MCP.finditer(inp["code"]):
+                    mcp[m.group(1)] += 1
             elif tool in SHELL_TOOLS and isinstance(inp.get("command"), str):
                 cmd = inp["command"]
                 for m in _CMD.finditer(cmd):
