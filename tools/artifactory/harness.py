@@ -42,6 +42,7 @@ import yaml
 from .acceptance import AcceptanceTest, load_acceptance
 from .checks.go import go_env
 from .goproxy import build_goproxy
+from .tooluse import count_tool_use
 from .pyindex import build_pyindex, download_wheels, index_env, standard_wheels, uv_binary
 from .result import CheckResult, TrialResult
 from .sandbox import allowlist, sandbox_command
@@ -86,6 +87,8 @@ DROP_PATTERNS = ("Transport:", "ECONNRESET", "socket connection was closed",
 INFRA_PREFIX = "infrastructure: "
 
 ROADMAPS = ("none", "frontier", "ornith")
+# The tool-value experiment's conditions: which of the artifactory CLI and arc the agent gets.
+CONDITIONS = ("control", "artifactory", "arc", "both")
 WRITER_ACTOR = "roadmap-writer"  # the frontier roadmap writer's bd actor
 BD_TIMEOUT_S = 120  # one host-side bd call; a hung bd must not end the trial's bookkeeping silently
 WRITING_LIMIT_S = 1200  # the ornith writing phase's share of the trial budget, at most
@@ -110,6 +113,7 @@ class RoundResult:
     standard_commit: str | None = None  # REPO HEAD, "-dirty" if the tree had changes; None if git failed
     kits: dict[str, str | None] = field(default_factory=dict)  # module -> mirror main SHA (empty for Go rounds)
     pyindex_wheels: list[str] = field(default_factory=list)  # wheel filenames of the built index (Python rounds only)
+    condition: str | None = None  # experiment rounds only (one of CONDITIONS); omitted from JSON otherwise
 
     @property
     def passes(self) -> int:
@@ -133,6 +137,7 @@ class RoundResult:
             "product": self.product,
             "arc": self.arc,
             "roadmap": self.roadmap,
+            **({"condition": self.condition} if self.condition is not None else {}),
             "time_limit_s": self.time_limit_s,
             "standard_commit": self.standard_commit,
             "kits": self.kits,
@@ -154,8 +159,10 @@ class Trial:
     proxy: Path | None
     env: dict[str, str]
     ro_binds: list[Path]
-    base_commit: str | None = None  # the fixture commit (arc mode), the checker's gate base
+    base_commit: str | None = None  # the fixture commit (arc mode, every experiment trial), the checker's gate base
     pyindex: Path | None = None  # the local wheel directory pip and uv install from (Python tests)
+    condition: str | None = None  # experiment trials only: one of CONDITIONS
+    checker_bin: Path | None = None  # experiment trials: tools only the checker gets (arc), never bound for the agent
 
 
 # --- trial setup -----------------------------------------------------------
@@ -165,9 +172,12 @@ def opencode_command(prompt: str) -> list[str]:
     return [str(OPENCODE), "run", "--standalone", "--auto", "--format", "json", "--model", MODEL, prompt]
 
 
-def opencode_config() -> dict:
-    """The agentbox provider with the one trial model; nothing else from the user's config."""
-    return {
+def opencode_config(mcp: bool = False) -> dict:
+    """The agentbox provider with the one trial model; nothing else from the user's config.
+
+    With `mcp`, also the `artifactory mcp` server (the experiment's artifactory and both conditions);
+    opencode starts it itself, so `artifactory` must be on the sandbox PATH."""
+    config = {
         "$schema": "https://opencode.ai/config.json",
         "model": MODEL,
         "small_model": MODEL,
@@ -191,6 +201,9 @@ def opencode_config() -> dict:
             },
         },
     }
+    if mcp:
+        config["mcp"] = {"artifactory": {"type": "local", "command": ["artifactory", "mcp"], "enabled": True}}
+    return config
 
 
 def _git(*args: str, cwd: Path) -> None:
@@ -213,9 +226,9 @@ def _nuget_config() -> str:
             f"  <fallbackPackageFolders>\n{fallback}  </fallbackPackageFolders>\n</configuration>\n")
 
 
-def _write_home(home: Path, mirrors: Path | None) -> None:
+def _write_home(home: Path, mirrors: Path | None, mcp: bool = False) -> None:
     (home / ".config" / "opencode").mkdir(parents=True)
-    (home / ".config" / "opencode" / "opencode.jsonc").write_text(json.dumps(opencode_config(), indent=2))
+    (home / ".config" / "opencode" / "opencode.jsonc").write_text(json.dumps(opencode_config(mcp), indent=2))
     (home / ".gitconfig").write_text(_gitconfig(mirrors))
     (home / ".nuget" / "NuGet").mkdir(parents=True)
     (home / ".nuget" / "NuGet" / "NuGet.Config").write_text(_nuget_config())
@@ -314,18 +327,45 @@ def _product_setup(test: AcceptanceTest, cli: Path, project: Path, home: Path, b
     if mirrors is None:
         raise ValueError("--product needs local kit mirrors")
     shutil.copy2(cli, bin_dir / "artifactory")
-    if arc is not None:
-        shutil.copy2(arc, bin_dir / "arc")
     config = {"ecosystem": test.ecosystem, "provider": f"dir:{mirrors}",
               "modules": [{"name": m} for m in test.modules]}
     (project / "artifactory.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
     if arc is not None:
-        (project / ".arch").mkdir(exist_ok=True)
-        shutil.copy2(test.dir / "arc-registry.yaml", project / ".arch" / "registry.yaml")
-        _run_tool([str(bin_dir / "arc"), "init", "--opencode", "--no-detect", "--ci", "none"], env, home, project)
-        (project / ".git" / "hooks" / "pre-commit").unlink(missing_ok=True)
+        _arc_setup(test, arc, project, home, bin_dir, env)
     _run_tool([str(bin_dir / "artifactory"), "index", "--project", str(project), "--arc",
                "on" if arc is not None else "off"], env, home)
+
+
+def _arc_setup(test: AcceptanceTest, arc: Path, project: Path, home: Path, bin_dir: Path,
+               env: dict[str, str]) -> None:
+    """arc in the trial bin, <test.dir>/arc-registry.yaml as the project's registry, `arc init` with the
+    opencode plugin, and no pre-commit hook. The project must already be a git repository."""
+    shutil.copy2(arc, bin_dir / "arc")
+    (project / ".arch").mkdir(exist_ok=True)
+    shutil.copy2(test.dir / "arc-registry.yaml", project / ".arch" / "registry.yaml")
+    _run_tool([str(bin_dir / "arc"), "init", "--opencode", "--no-detect", "--ci", "none"], env, home, project)
+    (project / ".git" / "hooks" / "pre-commit").unlink(missing_ok=True)
+
+
+def _commit_fixture(project: Path) -> str:
+    """Commit everything as the initial project and return the commit."""
+    _git("add", "-A", cwd=project)
+    _git("-c", f"user.name={TRIAL_NAME}", "-c", f"user.email={TRIAL_EMAIL}", "-c", "commit.gpgsign=false",
+         "commit", "-qm", "Initial project", cwd=project)
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=project, check=True, capture_output=True,
+                          text=True).stdout.strip()
+
+
+def _bd_setup(test: AcceptanceTest, project: Path, bin_dir: Path, home: Path, env: dict[str, str],
+              roadmap: str) -> None:
+    """bd in the trial bin, its env in `env`, initialised in the project; frontier imports the roadmap."""
+    shutil.copy2(bd_binary(), bin_dir / "bd")
+    env.update(bd_env(WRITER_ACTOR if roadmap == "workspace" else "ornith", home))
+    for args in [("init", "--stealth", "--non-interactive"),
+                 *([("import", str(test.dir / "roadmaps" / "frontier.jsonl"))] if roadmap == "frontier" else [])]:
+        r = bd_run(project, env, *args)
+        if r.returncode != 0:
+            raise RuntimeError(f"bd {args[0]} failed ({r.returncode}): {r.stderr.strip() or r.stdout.strip()}")
 
 
 def prepare_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors: Path | None,
@@ -364,25 +404,61 @@ def prepare_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors:
         _product_setup(test, Path(cli), project, home, bin_dir, mirrors, env, Path(arc) if arc else None)
     else:
         (project / "MODULES.md").write_text(index_md)
-    _git("add", "-A", cwd=project)
-    _git("-c", f"user.name={TRIAL_NAME}", "-c", f"user.email={TRIAL_EMAIL}", "-c", "commit.gpgsign=false",
-         "commit", "-qm", "Initial project", cwd=project)
-    base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=project, check=True, capture_output=True,
-                          text=True).stdout.strip() if arc is not None else None
+    base = _commit_fixture(project)
+    if arc is None:
+        base = None
     if roadmap != "none":
-        shutil.copy2(bd_binary(), bin_dir / "bd")
-        env.update(bd_env(WRITER_ACTOR if roadmap == "workspace" else "ornith", home))
-        for args in [("init", "--stealth", "--non-interactive"),
-                     *([("import", str(test.dir / "roadmaps" / "frontier.jsonl"))] if roadmap == "frontier" else [])]:
-            r = bd_run(project, env, *args)
-            if r.returncode != 0:
-                raise RuntimeError(f"bd {args[0]} failed ({r.returncode}): {r.stderr.strip() or r.stdout.strip()}")
+        _bd_setup(test, project, bin_dir, home, env, roadmap)
     # A script, never a symlink: a symlinked Godot deadlocks headless.
     launcher = bin_dir / "godot"
     launcher.write_text(f'#!/bin/sh\nexec "{GODOT_BINARY}" "$@"\n')
     launcher.chmod(0o755)
     return Trial(trial_dir, project, home, bin_dir, mirrors, proxy,
                  env, _tool_binds(mirrors, proxy, bin_dir, pyindex), base, pyindex)
+
+
+def prepare_experiment_trial(test: AcceptanceTest, condition: str, trial_dir: Path, proxy: Path, catalog: Path,
+                             cli: Path, arc: Path) -> Trial:
+    """One experiment trial's project, HOME and bin for `condition` (see CONDITIONS), on the frozen roadmap.
+
+    Every condition: the fixture as a git repository, bd with <test.dir>/roadmaps/frontier.jsonl imported,
+    the file GOPROXY, and arc in <trial>/checker-bin for the checker only.
+    arc, both: the arc_overlay files, then arc as in product mode (`_arc_setup`).
+    artifactory, both: the CLI in the bin, `.opencode/`, `artifactory init` over the `dir:` catalog
+    (bound read-only for the agent), and the `artifactory mcp` server in the opencode config."""
+    if condition not in CONDITIONS:
+        raise ValueError(f"condition must be one of {', '.join(CONDITIONS)}, not {condition!r}")
+    tool, has_arc = condition in ("artifactory", "both"), condition in ("arc", "both")
+    trial_dir = Path(trial_dir).resolve()
+    if trial_dir.exists():
+        raise FileExistsError(f"{trial_dir} already exists; remove it to rerun the trial")
+    proxy, catalog = Path(proxy).resolve(), Path(catalog).resolve()
+    project, home, bin_dir = trial_dir / "project", trial_dir / "home", trial_dir / "bin"
+    checker_bin = trial_dir / "checker-bin"
+    trial_dir.mkdir(parents=True)
+    shutil.copytree(test.fixture, project, symlinks=True)
+    home.mkdir()
+    _write_home(home, None, mcp=tool)
+    bin_dir.mkdir()
+    checker_bin.mkdir()
+    shutil.copy2(arc, checker_bin / "arc")
+    env = _base_env(home, bin_dir, proxy)
+    _git("init", "-q", "-b", "main", cwd=project)
+    if has_arc:
+        if test.arc_overlay is not None:
+            shutil.copytree(test.arc_overlay, project, symlinks=True, dirs_exist_ok=True)
+        _arc_setup(test, Path(arc), project, home, bin_dir, env)
+    if tool:
+        shutil.copy2(cli, bin_dir / "artifactory")
+        (project / ".opencode").mkdir(exist_ok=True)
+        # arc auto: in both, kits installed later are registered with arc
+        _run_tool([str(bin_dir / "artifactory"), "init", "--ecosystem", test.ecosystem,
+                   "--provider", f"dir:{catalog}", "--project", str(project)], env, home)
+    base = _commit_fixture(project)
+    _bd_setup(test, project, bin_dir, home, env, "frontier")
+    binds = _tool_binds(None, proxy, bin_dir) + ([catalog] if tool else [])
+    return Trial(trial_dir, project, home, bin_dir, None, proxy, env, binds, base,
+                 condition=condition, checker_bin=checker_bin)
 
 
 def prepare_roadmap_workspace(test: AcceptanceTest, out_dir: Path, mirrors: Path, cli: Path, arc: Path) -> tuple[Trial, str]:
@@ -507,11 +583,19 @@ def _python_binds() -> list[Path]:
 
 
 def checker_command(trial: Trial, test_dir: Path, ecosystem: str, fixture: Path, out: Path, branch: str,
-                    baseline: bool) -> list[str]:
+                    baseline: bool, main_pkg: str | None = None) -> list[str]:
+    """The sandboxed checker argv. An experiment trial (trial.condition set, Go) also gets the main package,
+    the held arc registry and the fixture commit; trial.checker_bin follows trial.bin on its PATH."""
     check_home = trial.dir / "checker-home"
-    argv = [sys.executable, "-m", "artifactory.cli", "check", str(Path(test_dir).resolve()), str(trial.project)]
+    test_dir = Path(test_dir).resolve()
+    argv = [sys.executable, "-m", "artifactory.cli", "check", str(test_dir), str(trial.project)]
     if ecosystem == "go":
         argv += ["--proxy", str(trial.proxy)]
+        if trial.condition is not None:
+            if main_pkg is None or trial.base_commit is None:
+                raise ValueError("an experiment trial's checker needs main_pkg and the trial's base commit")
+            argv += ["--main-pkg", main_pkg, "--arc-registry", str(test_dir / "arc-registry.yaml"),
+                     "--arc-base", trial.base_commit]
     elif ecosystem == "python":
         if trial.pyindex is None:
             raise ValueError("a Python trial needs a wheel index (pyindex)")
@@ -526,10 +610,11 @@ def checker_command(trial: Trial, test_dir: Path, ecosystem: str, fixture: Path,
         raise ValueError(f"no checker for ecosystem {ecosystem!r}")
     argv += ["-o", str(out)]
     env = _base_env(check_home, trial.bin, None, trial.pyindex)
-    env["PATH"] = f"{trial.bin}:/usr/local/bin:/usr/bin"
+    extra = [trial.checker_bin] if trial.checker_bin is not None else []
+    env["PATH"] = ":".join(map(str, [trial.bin, *extra, "/usr/local/bin", "/usr/bin"]))
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONPATH"] = str(REPO / "tools")
-    ro = [REPO, Path(test_dir), fixture, trial.project, trial.home, *_python_binds(), *trial.ro_binds]
+    ro = [REPO, test_dir, fixture, trial.project, trial.home, *_python_binds(), *trial.ro_binds, *extra]
     # No allow list, not even ARTIFACTORY_SANDBOX_ALLOW: the checker gets no network.
     return sandbox_command(check_home, check_home, ro, argv, env, cwd=check_home)
 
@@ -544,7 +629,7 @@ def run_checker(trial: Trial, test: AcceptanceTest, test_dir: Path, branch: str,
     (check_home / ".gitconfig").write_text(_gitconfig(None))
     out = check_home / "checker.json"
     log = trial.dir / "checker.log"
-    cmd = checker_command(trial, test_dir, test.ecosystem, test.fixture, out, branch, baseline)
+    cmd = checker_command(trial, test_dir, test.ecosystem, test.fixture, out, branch, baseline, test.main_pkg)
     finished = _run_sandboxed(cmd, log, None, CHECKER_TIMEOUT_S)
     try:
         data = json.loads(out.read_text())
@@ -774,19 +859,48 @@ def run_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors: Pat
     run = run_agent(trial, test, opencode_argv, roadmap)
     test_dir = Path(test_dir) if test_dir is not None else REPO / "tests" / "acceptance" / test.name
     result = run_checker(trial, test, test_dir, branch, baseline)
+    return _record_run(trial, result, run, arc is not None)
+
+
+def _record_run(trial: Trial, result: TrialResult, run: AgentRun, arc: bool, *,
+                tool_use_proxy: Path | None = None, count_tools: bool = False) -> TrialResult:
+    """Put the agent run's outcome on the checker's result and write <trial>/checker.json."""
     result.resumes = run.resumes
-    if run.dropped:
+    if result.reason is not None:
+        pass  # the checker failed (infrastructure); that reason stands
+    elif run.dropped:
         result.reason = (f"{INFRA_PREFIX}model connection dropped after {run.dropped.resumes} resumes: "
                          f"{run.dropped.drop[1]}")
     elif run.timed_out:
         result.reason = "timeout"
     if run.outcome is not None:
         result.roadmap = asdict(run.outcome)
-    if arc is not None:
-        result.arc_denials = trial_denials(trial.dir)
+    if arc:
+        try:
+            result.arc_denials = trial_denials(trial.dir)
+        except Exception:  # noqa: BLE001 - a bad transcript must not lose the checker result
+            result.arc_denials = None
         result.arc_hook_live = arc_hook_live(trial.project)
+    if count_tools:
+        try:
+            result.tool_use = count_tool_use(sorted(trial.dir.glob("transcript*.jsonl")), tool_use_proxy)
+        except Exception as e:  # noqa: BLE001
+            result.tool_use = {"error": f"{type(e).__name__}: {e}"}
     (trial.dir / "checker.json").write_text(result.to_json())
     return result
+
+
+def run_experiment_trial(test: AcceptanceTest, condition: str, trial_dir: Path, *, proxy: Path, catalog: Path,
+                         cli: Path, arc: Path, opencode_argv: list[str] | None = None) -> TrialResult:
+    """One experiment trial: prepare `condition`, run the bead loop on the frozen roadmap within
+    test.time_limit_s, then check it sandboxed, the same way in every condition."""
+    trial = prepare_experiment_trial(test, condition, trial_dir, proxy, catalog, cli, arc)
+    run = run_agent(trial, test, opencode_argv, "frontier")
+    try:
+        result = run_checker(trial, test, test.dir, STITCH_BRANCH, False)
+    except Exception as e:  # noqa: BLE001 - keep the (long) agent run's outcome on the result
+        result = TrialResult(test.name, trial.dir.name, reason=f"{INFRA_PREFIX}checker: {str(e) or type(e).__name__}")
+    return _record_run(trial, result, run, condition in ("arc", "both"), tool_use_proxy=proxy, count_tools=True)
 
 
 def resume_command(argv: list[str], session: str | None) -> list[str]:
@@ -980,6 +1094,78 @@ def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = F
     return result
 
 
+def build_catalog(dest: Path) -> Path:
+    """The experiment's `dir:` catalog at `dest` (replaced if present): a fresh copy of every Go and
+    Python sample kit (a directory with a module.yaml)."""
+    dest = Path(dest).resolve()
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True)
+    for eco in ("go", "python"):
+        for d in sorted((REPO / "samples" / eco).iterdir()):
+            if (d / "module.yaml").is_file():
+                shutil.copytree(d, dest / d.name, symlinks=True,
+                                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache", ".venv"))
+    return dest
+
+
+def run_experiment(test_dir: Path, round_no: int, trials: int = 3, conditions: list[str] | None = None, *,
+                   results_root: Path | None = None, opencode_argv: list[str] | None = None,
+                   arc_src: Path | None = None) -> dict[str, RoundResult]:
+    """Run `trials` trials of each condition, interleaved (trial 1 of every condition, then trial 2, ...),
+    into results/<test>/round-<N>-<condition>/trial-<k>/. Each condition's round.json is rewritten after
+    each of its trials. An exception in one trial is recorded as that trial's infrastructure failure."""
+    test_dir = Path(test_dir).resolve()
+    test = load_acceptance(test_dir)
+    if test.ecosystem != "go":
+        raise ValueError(f"experiments are defined for Go tests only; {test.name} is {test.ecosystem}")
+    if not test.conditions:
+        raise ValueError(f"{test_dir / 'test.yaml'} lists no conditions")
+    conditions = list(conditions) if conditions else list(test.conditions)
+    bad = [c for c in conditions if c not in CONDITIONS or c not in test.conditions]
+    if bad:
+        raise ValueError(f"unknown conditions {', '.join(bad)}; {test.name} has {', '.join(test.conditions)}")
+    if len(set(conditions)) != len(conditions):
+        raise ValueError("each condition may be named once")
+    if trials < 1:
+        raise ValueError("--trials must be positive")
+    if not (test_dir / "roadmaps" / "frontier.jsonl").is_file():
+        raise ValueError(f"an experiment needs {test_dir / 'roadmaps' / 'frontier.jsonl'}")
+    missing = [m for m in test.modules if m not in {d.name for d in _go_sample_dirs()}]
+    if missing:
+        raise RuntimeError(f"no Go sample module for: {', '.join(missing)}")
+    root = Path(results_root or RESULTS).resolve()
+    outs = {c: round_dir(root, test.name, round_no, False, c) for c in conditions}
+    taken = [out / f"trial-{k}" for out in outs.values() for k in range(1, trials + 1) if (out / f"trial-{k}").exists()]
+    if taken:
+        raise FileExistsError(f"{taken[0]} already exists; use another --round or remove it")
+    cli, arc = build_cli(root), build_arc(root, arc_src)
+    proxy = root / "goproxy" / test.name
+    if proxy.exists():
+        shutil.rmtree(proxy)
+    build_goproxy(_go_sample_dirs(), proxy)
+    catalog = build_catalog(root / "go-catalog" / test.name)
+    commit = standard_commit()
+    rounds = {c: RoundResult(test.name, round_no, product=c in ("artifactory", "both"), arc=c in ("arc", "both"),
+                             roadmap="frontier", time_limit_s=test.time_limit_s, standard_commit=commit, condition=c)
+              for c in conditions}
+    for out in outs.values():
+        out.mkdir(parents=True, exist_ok=True)
+    for k in range(1, trials + 1):
+        for c in conditions:
+            trial_dir = outs[c] / f"trial-{k}"
+            try:
+                tr = run_experiment_trial(test, c, trial_dir, proxy=proxy, catalog=catalog, cli=cli, arc=arc,
+                                          opencode_argv=opencode_argv)
+            except Exception as e:  # noqa: BLE001 - one trial's failure must not stop the others
+                tr = TrialResult(test.name, trial_dir.name, reason=f"{INFRA_PREFIX}{str(e) or type(e).__name__}")
+                if trial_dir.is_dir():
+                    (trial_dir / "checker.json").write_text(tr.to_json())
+            rounds[c].results.append(tr)
+            (outs[c] / "round.json").write_text(rounds[c].to_json())
+    return rounds
+
+
 def build_python_index(mirrors: Path, test: AcceptanceTest, branch: str, dest: Path) -> Path:
     """A Python round's wheel index at `dest` (replaced if present): each kit built from `branch` of its
     mirror, plus the standard wheels and the test's python_wheels."""
@@ -1009,7 +1195,8 @@ def export_kits(mirrors: Path, modules: list[str], branch: str, dest: Path) -> l
 
 
 def round_dir(root: Path, test: str, round_no: int, baseline: bool, roadmap: str = "none") -> Path:
-    """round-<N> for none (as before), round-<N>-<roadmap> for the bead conditions."""
+    """round-<N> for none (as before), round-<N>-<roadmap> for the bead conditions; experiments pass
+    their condition as `roadmap` (round-<N>-<condition>)."""
     if baseline:
         return Path(root) / test / "baseline"
     return Path(root) / test / (f"round-{round_no}" if roadmap == "none" else f"round-{round_no}-{roadmap}")

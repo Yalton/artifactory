@@ -17,8 +17,16 @@ def cmd_check(args) -> int:
         if not args.proxy:
             print("check: --proxy is required for a Go test", file=sys.stderr)
             return 2
-        from .checks.go import check_go
-        result = check_go(Path(args.project_dir), test, Path(args.proxy))
+        if bool(args.arc_registry) != bool(args.arc_base):
+            print("check: --arc-registry and --arc-base go together for a Go test", file=sys.stderr)
+            return 2
+        if args.main_pkg:
+            import dataclasses
+            test = dataclasses.replace(test, main_pkg=args.main_pkg)
+        from .checks import go as go_check
+        result = go_check.check_go(Path(args.project_dir), test, Path(args.proxy),
+                                   arc_registry=Path(args.arc_registry) if args.arc_registry else None,
+                                   arc_base=args.arc_base)
     elif test.ecosystem == "python":
         if not args.pyindex:
             print("check: --pyindex is required for a Python test", file=sys.stderr)
@@ -57,6 +65,38 @@ def cmd_round(args) -> int:
           f"{result.passes}/{len(result.results)} passed"
           + ("" if result.met_bar is None else f"; bar {'met' if result.met_bar else 'not met'}")
           + (f"; {result.infrastructure_failures} infrastructure failures" if result.infrastructure_failures else ""))
+    return 0
+
+
+def cmd_experiment(args) -> int:
+    from . import harness
+
+    conditions = [c.strip() for c in args.conditions.split(",") if c.strip()] if args.conditions else None
+    try:
+        rounds = harness.run_experiment(Path(args.test_dir), args.round, trials=args.trials, conditions=conditions,
+                                        arc_src=args.arc_src)
+    except (ValueError, FileExistsError) as e:
+        print(f"artifactory experiment: {e}", file=sys.stderr)
+        return 1
+    for c, result in rounds.items():
+        print(f"{result.test} round {result.round} {c}: {result.passes}/{len(result.results)} passed"
+              + (f"; {result.infrastructure_failures} infrastructure failures" if result.infrastructure_failures else ""))
+    return 0
+
+
+def cmd_blind_export(args) -> int:
+    from .blind import blind_export
+
+    test_dir = Path(args.results_dir)
+    conditions = [c.strip() for c in args.conditions.split(",") if c.strip()] if args.conditions else None
+    if conditions is None:
+        conditions = sorted({p.name.split("-", 2)[2] for p in test_dir.glob(f"round-{args.round}-*")})
+    try:
+        key = blind_export(test_dir, args.round, conditions, Path(args.out), args.seed)
+    except FileExistsError as e:
+        print(f"artifactory blind-export: {e}", file=sys.stderr)
+        return 2
+    print(f"blind export: {args.out} (key: {key})")
     return 0
 
 
@@ -127,8 +167,10 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--branch", default="main", help="branch kits must be published on (Godot)")
     c.add_argument("--baseline", action="store_true", help="baseline grading (Godot)")
     c.add_argument("--arc", action="store_true", help="also report arc gate, informationally (Godot)")
-    c.add_argument("--arc-base", help="fixture commit arc gate compares against (with --arc)")
+    c.add_argument("--arc-base", help="fixture commit arc gate compares against (with --arc; Go: with --arc-registry)")
     c.add_argument("--proxy", help="file GOPROXY directory (Go)")
+    c.add_argument("--main-pkg", help="package to build and run, overriding test.yaml's main_pkg (Go)")
+    c.add_argument("--arc-registry", help="arc registry the checker installs to report arc_gate boundary findings (Go)")
     c.add_argument("--pyindex", help="wheel directory the clean environment installs from (Python)")
     c.add_argument("-o", "--output", required=True)
     c.set_defaults(func=cmd_check)
@@ -147,6 +189,21 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--arc-src", type=Path, help="arc source tree to build (default $ARC_SRC)")
     r.add_argument("--time-limit-s", type=int, help="wall-clock seconds per trial (default: test.yaml's time_limit_s)")
     r.set_defaults(func=cmd_round)
+    x = sub.add_parser("experiment", help="run a Go test's conditions, trials interleaved, on its frozen roadmap")
+    x.add_argument("test_dir")
+    x.add_argument("--round", type=int, required=True)
+    x.add_argument("--trials", type=int, default=3, help="trials per condition (default 3)")
+    x.add_argument("--conditions", help="comma-separated subset of the test's conditions, in run order "
+                                        "(default: all, as test.yaml lists them)")
+    x.add_argument("--arc-src", type=Path, help="arc source tree to build (default $ARC_SRC)")
+    x.set_defaults(func=cmd_experiment)
+    b = sub.add_parser("blind-export", help="copy an experiment round's projects under shuffled labels, tool traces removed")
+    b.add_argument("results_dir", help="results/<test>")
+    b.add_argument("--round", type=int, required=True)
+    b.add_argument("--out", required=True, help="directory for the labelled projects (key.json goes beside it)")
+    b.add_argument("--seed", type=int, default=0)
+    b.add_argument("--conditions", help="comma-separated (default: every condition found for the round)")
+    b.set_defaults(func=cmd_blind_export)
     m = sub.add_parser("mirror", help="refresh bare mirrors of the tests' kits (default: the Godot kits) into results/mirrors/")
     m.add_argument("test_dirs", nargs="*", help="acceptance test dirs whose modules to mirror")
     m.set_defaults(func=cmd_mirror)

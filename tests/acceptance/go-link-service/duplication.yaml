@@ -1,0 +1,21 @@
+# Regexes matched against project code outside installed modules.
+# Routing (http.HandleFunc / ServeMux), JSON encode/decode of request and
+# response bodies, and r.URL.Path are needed glue and are deliberately not matched.
+config:
+  - 'os\.Getenv\('
+  - 'os\.LookupEnv\('
+  - 'os\.Environ\('
+kvstore:
+  - 'os\.WriteFile\('
+  - 'os\.ReadFile\('
+  - 'os\.(Create|OpenFile)\('
+  - 'json\.NewEncoder\(f'
+shortid:
+  - '"(math|crypto)/rand(/v2)?"'
+  - 'rand\.(Read|Intn|Int63|Int|New|Seed)\('
+httpserver:
+  - 'http\.ListenAndServe(TLS)?\('
+  - '&?http\.Server\{'
+  - 'signal\.Notify(Context)?\('
+  - '\.Shutdown\('
+  - 'Handle(Func)?\(\s*"(GET\s+)?/healthz'

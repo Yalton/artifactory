@@ -16,6 +16,8 @@ if err != nil {
 defer store.Close()
 
 added, err := store.PutIfAbsent("key", "value") // added is false if key exists
+err = store.Put("key", "new") // insert or replace
+existed, err := store.Delete("key") // existed is false if key was missing
 val, found, err := store.Get("key")
 ```
 

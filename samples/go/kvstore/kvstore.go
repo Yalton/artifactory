@@ -66,6 +66,39 @@ func (s *Store) PutIfAbsent(key, val string) (bool, error) {
 	return true, nil
 }
 
+// Put stores val under key, replacing any existing value.
+func (s *Store) Put(key, val string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	old, had := s.data[key]
+	s.data[key] = val
+	if err := s.flush(); err != nil {
+		if had {
+			s.data[key] = old
+		} else {
+			delete(s.data, key)
+		}
+		return err
+	}
+	return nil
+}
+
+// Delete removes key. It reports whether the key existed; the file is rewritten only if it did.
+func (s *Store) Delete(key string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	old, ok := s.data[key]
+	if !ok {
+		return false, nil
+	}
+	delete(s.data, key)
+	if err := s.flush(); err != nil {
+		s.data[key] = old
+		return false, err
+	}
+	return true, nil
+}
+
 // Close releases the store. Every write is already on disk.
 func (s *Store) Close() error { return nil }
 

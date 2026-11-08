@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+import yaml
 
 from artifactory import harness
 from artifactory.acceptance import load_acceptance
@@ -1363,3 +1364,253 @@ def test_refresh_mirrors_takes_the_given_tests_modules(tmp_path, monkeypatch):
     assert all(argv[:3] == ["git", "clone", "--mirror"] for argv in calls)
     default = harness.refresh_mirrors(tmp_path / "godot")
     assert [p.name for p in default] == [f"{m}.git" for m in load_acceptance(harness.GODOT_TEST).modules]
+
+
+# --- the tool-value experiment: conditions and the interleaved runner --------
+
+LINKS_DIR = ROOT / "tests" / "acceptance" / "go-link-service"
+LINKS = load_acceptance(LINKS_DIR)
+OVERLAY = sorted(p.relative_to(LINKS.arc_overlay) for p in LINKS.arc_overlay.rglob("*") if p.is_file())
+
+
+def test_opencode_config_mcp_is_opt_in():
+    assert "mcp" not in harness.opencode_config()
+    assert "mcp" not in harness.opencode_config(mcp=False)
+    cfg = harness.opencode_config(mcp=True)
+    assert cfg["mcp"] == {"artifactory": {"type": "local", "command": ["artifactory", "mcp"], "enabled": True}}
+    assert {k: v for k, v in cfg.items() if k != "mcp"} == harness.opencode_config()
+
+
+@pytest.fixture(scope="module")
+def experiment_parts(tmp_path_factory, cli):
+    src = Path(os.environ.get("ARC_SRC") or harness.DEFAULT_ARC_SRC)
+    if not (src / "cmd" / "arc").is_dir():
+        pytest.skip(f"no arc source at {src}")
+    if not harness.BD_FALLBACK.is_file() and shutil.which("bd") is None:
+        pytest.skip("bd is not installed")
+    tmp = tmp_path_factory.mktemp("experiment")
+    arc = harness.build_arc(tmp / "arcbuild", src)
+    proxy = tmp / "goproxy"
+    build_goproxy(harness._go_sample_dirs(), proxy)
+    catalog = harness.build_catalog(tmp / "catalog")
+    return {"cli": cli, "arc": arc, "proxy": proxy, "catalog": catalog, "tmp": tmp}
+
+
+@pytest.mark.parametrize("condition", harness.CONDITIONS)
+def test_experiment_conditions_setup(experiment_parts, condition):
+    p = experiment_parts
+    tool, has_arc = condition in ("artifactory", "both"), condition in ("arc", "both")
+    trial = harness.prepare_experiment_trial(LINKS, condition, p["tmp"] / condition / "trial-1", p["proxy"],
+                                             p["catalog"], p["cli"], p["arc"])
+    proj = trial.project
+    assert trial.condition == condition
+    assert (trial.bin / "bd").is_file()
+    assert (trial.bin / "artifactory").is_file() == tool
+    assert (trial.bin / "arc").is_file() == has_arc
+    assert (trial.dir / "checker-bin" / "arc").is_file()  # the checker's arc, in every condition
+    assert trial.checker_bin == trial.dir / "checker-bin" and trial.checker_bin not in trial.ro_binds
+    assert (proj / ".arch").is_dir() == has_arc
+    if has_arc:
+        assert (proj / ".arch" / "registry.yaml").read_text() == (LINKS.dir / "arc-registry.yaml").read_text()
+        assert not (proj / ".git" / "hooks" / "pre-commit").exists()
+    assert (proj / ".opencode" / "skills" / "artifactory" / "SKILL.md").is_file() == tool
+    assert (proj / "artifactory.yaml").is_file() == tool
+    if tool:
+        cfg = yaml.safe_load((proj / "artifactory.yaml").read_text())
+        assert cfg["ecosystem"] == "go" and cfg["provider"] == f"dir:{p['catalog'].resolve()}"
+        assert not cfg.get("modules")
+        assert p["catalog"].resolve() in trial.ro_binds
+        # the MCP entry's command resolves on the sandbox PATH
+        assert (Path(trial.env["PATH"].split(":")[0]) / "artifactory").is_file()
+    else:
+        assert p["catalog"].resolve() not in trial.ro_binds
+    oc = json.loads((trial.home / ".config" / "opencode" / "opencode.jsonc").read_text())
+    assert ("mcp" in oc) == tool
+    if tool:
+        assert oc["mcp"]["artifactory"]["command"] == ["artifactory", "mcp"]
+    for rel in OVERLAY:
+        assert (proj / rel).is_file() == has_arc, rel
+    assert trial.base_commit and git("rev-parse", "HEAD", cwd=proj).strip() == trial.base_commit
+    assert git("status", "--porcelain", cwd=proj) == ""
+    ready = json.loads(harness.bd_run(proj, trial.env, "ready", "--json").stdout)
+    assert [b["id"] for b in ready] == ["links-1"]
+
+
+def test_build_catalog_copies_every_go_and_python_kit(tmp_path):
+    (tmp_path / "catalog" / "stale").mkdir(parents=True)
+    catalog = harness.build_catalog(tmp_path / "catalog")
+    want = {d.name for d in (harness.REPO / "samples" / "go").iterdir() if (d / "module.yaml").is_file()}
+    want |= {d.name for d in (harness.REPO / "samples" / "python").iterdir() if (d / "module.yaml").is_file()}
+    assert {d.name for d in catalog.iterdir()} == want
+    assert (catalog / "kvstore" / "module.yaml").read_text() == (SAMPLES / "kvstore" / "module.yaml").read_text()
+
+
+def test_experiment_checker_gets_go_flags_and_its_own_arc(tmp_path):
+    bin_dir, cbin = tmp_path / "bin", tmp_path / "checker-bin"
+    trial = harness.Trial(tmp_path, tmp_path / "project", tmp_path / "home", bin_dir, None, tmp_path / "proxy",
+                          {}, [bin_dir], base_commit="abc123", condition="control", checker_bin=cbin)
+    cmd = harness.checker_command(trial, LINKS_DIR, "go", LINKS.fixture, tmp_path / "out.json", "main", False,
+                                  main_pkg="./cmd/links")
+    tail = cmd[cmd.index("--chdir") + 3:]
+    assert tail[tail.index("--main-pkg") + 1] == "./cmd/links"
+    assert tail[tail.index("--arc-registry") + 1] == str(LINKS_DIR / "arc-registry.yaml")
+    assert tail[tail.index("--arc-base") + 1] == "abc123"
+    path = cmd[cmd.index("PATH", cmd.index("--clearenv")) + 1]
+    assert path.split(":")[:2] == [str(bin_dir), str(cbin)]
+    assert str(cbin) in [cmd[i + 1] for i, a in enumerate(cmd) if a == "--ro-bind"]
+
+
+def test_plain_go_checker_command_is_unchanged(tmp_path):
+    trial = harness.Trial(tmp_path, tmp_path / "project", tmp_path / "home", tmp_path / "bin", None,
+                          tmp_path / "proxy", {}, [tmp_path / "bin"])
+    cmd = harness.checker_command(trial, GO_TEST_DIR, "go", GO_TEST.fixture, tmp_path / "out.json", "main", False,
+                                  main_pkg="./cmd/shortener")
+    for flag in ("--main-pkg", "--arc-registry", "--arc-base", "--arc"):
+        assert flag not in cmd[cmd.index("--chdir"):]
+    path = cmd[cmd.index("PATH", cmd.index("--clearenv")) + 1]
+    assert path == f"{tmp_path / 'bin'}:/usr/local/bin:/usr/bin"
+
+
+def _fake_experiment(monkeypatch, tmp_path, fail_on=None):
+    calls = []
+    monkeypatch.setattr(harness, "build_cli", lambda root: tmp_path / "cli")
+    monkeypatch.setattr(harness, "build_arc", lambda root, src=None: tmp_path / "arc")
+    monkeypatch.setattr(harness, "build_goproxy", lambda dirs, out: out.mkdir(parents=True))
+
+    def fake(test, condition, trial_dir, **kw):
+        calls.append((condition, trial_dir.name, trial_dir.parent.name))
+        if (condition, trial_dir.name) == fail_on:
+            raise RuntimeError("bd import failed (1): boom")
+        return TrialResult(test.name, trial_dir.name, checks=[CheckResult("x", True, "")])
+    monkeypatch.setattr(harness, "run_experiment_trial", fake)
+    return calls
+
+
+def test_experiment_interleaves_and_survives_failure(tmp_path, monkeypatch):
+    calls = _fake_experiment(monkeypatch, tmp_path, fail_on=("arc", "trial-1"))
+    res = harness.run_experiment(LINKS_DIR, 1, trials=2, results_root=tmp_path / "res")
+    assert calls == [(c, f"trial-{k}", f"round-1-{c}") for k in (1, 2) for c in harness.CONDITIONS]
+    assert list(res) == list(harness.CONDITIONS)
+    for c in harness.CONDITIONS:
+        data = json.loads((tmp_path / "res" / LINKS.name / f"round-1-{c}" / "round.json").read_text())
+        assert data["condition"] == c and data["roadmap"] == "frontier"
+        assert data["product"] == (c in ("artifactory", "both")) and data["arc"] == (c in ("arc", "both"))
+        assert [t["trial"] for t in data["trials"]] == ["trial-1", "trial-2"]
+    arc = res["arc"].results[0]
+    assert arc.reason == "infrastructure: bd import failed (1): boom" and not arc.passed
+    assert res["arc"].infrastructure_failures == 1 and res["arc"].results[1].passed
+    assert (tmp_path / "res" / "go-catalog" / LINKS.name / "kvstore" / "module.yaml").is_file()
+
+
+def test_experiment_runs_only_the_named_conditions(tmp_path, monkeypatch):
+    calls = _fake_experiment(monkeypatch, tmp_path)
+    res = harness.run_experiment(LINKS_DIR, 2, trials=1, conditions=["both", "control"], results_root=tmp_path / "res")
+    assert [c for c, *_ in calls] == ["both", "control"] and list(res) == ["both", "control"]
+
+
+def test_experiment_refuses_tests_and_conditions_it_cannot_run(tmp_path, monkeypatch):
+    _fake_experiment(monkeypatch, tmp_path)
+    with pytest.raises(ValueError, match="conditions"):
+        harness.run_experiment(GO_TEST_DIR, 1, results_root=tmp_path)  # Go, but no conditions
+    with pytest.raises(ValueError, match="Go"):
+        harness.run_experiment(ROOT / "tests" / "acceptance" / "godot-lantern-keep", 1, results_root=tmp_path)
+    with pytest.raises(ValueError, match="bogus"):
+        harness.run_experiment(LINKS_DIR, 1, conditions=["control", "bogus"], results_root=tmp_path)
+
+
+def test_round_json_condition_field():
+    assert json.loads(RoundResult("t", 1, condition="arc").to_json())["condition"] == "arc"
+    assert "condition" not in json.loads(RoundResult("t", 1).to_json())
+
+
+def test_cli_experiment_passes_its_arguments(monkeypatch, capsys):
+    from artifactory.cli import main
+    seen = {}
+
+    def fake(test_dir, round_no, trials=3, conditions=None, **kw):
+        seen.update(test_dir=test_dir, round_no=round_no, trials=trials, conditions=conditions, **kw)
+        return {c: RoundResult("go-link-service", round_no, condition=c) for c in conditions or harness.CONDITIONS}
+    monkeypatch.setattr(harness, "run_experiment", fake)
+    assert main(["experiment", str(LINKS_DIR), "--round", "4", "--conditions", "arc,both"]) == 0
+    assert seen["round_no"] == 4 and seen["trials"] == 3 and seen["conditions"] == ["arc", "both"]
+    assert "arc" in capsys.readouterr().out
+    assert main(["experiment", str(LINKS_DIR), "--round", "1", "--trials", "1"]) == 0
+    assert seen["conditions"] is None and seen["trials"] == 1
+
+    def bad(*a, **k):
+        raise ValueError("nope")
+    monkeypatch.setattr(harness, "run_experiment", bad)
+    assert main(["experiment", str(LINKS_DIR), "--round", "1"]) == 1
+    assert "artifactory experiment: nope" in capsys.readouterr().err
+
+
+def test_experiment_checker_failure_keeps_the_agent_outcome(tmp_path, monkeypatch):
+    project = tmp_path / "trial" / "project"
+    project.mkdir(parents=True)
+    trial = harness.Trial(tmp_path / "trial", project, tmp_path / "home", tmp_path / "bin", None, tmp_path / "proxy",
+                          {}, [], base_commit="abc", condition="both")
+    monkeypatch.setattr(harness, "prepare_experiment_trial", lambda *a, **kw: trial)
+    outcome = harness.RoadmapOutcome(beads=4, closed=3, sessions=5)
+    monkeypatch.setattr(harness, "run_agent", lambda *a, **kw: harness.AgentRun(True, outcome, resumes=2))
+
+    def broken(*a, **kw):
+        raise RuntimeError("sandbox exploded")
+    monkeypatch.setattr(harness, "run_checker", broken)
+    tr = harness.run_experiment_trial(LINKS, "both", trial.dir, proxy=tmp_path, catalog=tmp_path, cli=tmp_path,
+                                      arc=tmp_path)
+    assert tr.reason == "infrastructure: checker: sandbox exploded" and not tr.passed
+    assert tr.resumes == 2 and tr.roadmap["closed"] == 3 and tr.arc_denials == 0
+    assert json.loads((trial.dir / "checker.json").read_text())["roadmap"]["beads"] == 4
+
+
+def test_experiment_trial_records_tool_use(tmp_path, monkeypatch):
+    project = tmp_path / "trial" / "project"
+    project.mkdir(parents=True)
+    ev = {"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "artifactory search x"}}}}
+    (tmp_path / "trial" / "transcript.jsonl").write_text(json.dumps(ev) + "\n")
+    trial = harness.Trial(tmp_path / "trial", project, tmp_path / "home", tmp_path / "bin", None, tmp_path / "proxy",
+                          {}, [], base_commit="abc", condition="artifactory")
+    monkeypatch.setattr(harness, "prepare_experiment_trial", lambda *a, **kw: trial)
+    monkeypatch.setattr(harness, "run_agent", lambda *a, **kw: harness.AgentRun(True, None))
+    monkeypatch.setattr(harness, "run_checker", lambda *a, **kw: harness.TrialResult("t", "trial"))
+    harness.run_experiment_trial(LINKS, "artifactory", trial.dir, proxy=tmp_path, catalog=tmp_path, cli=tmp_path,
+                                 arc=tmp_path)
+    data = json.loads((trial.dir / "checker.json").read_text())
+    assert data["tool_use"]["artifactory"] == {"search": 1}
+
+
+def test_blind_export_cli(tmp_path, capsys):
+    from artifactory.cli import main
+
+    res = tmp_path / "results" / "t"
+    (res / "round-1-arc" / "trial-1" / "project").mkdir(parents=True)
+    assert main(["blind-export", str(res), "--round", "1", "--out", str(tmp_path / "o")]) == 0
+    assert (tmp_path / "o" / "P01").is_dir() and (tmp_path / "key.json").exists()
+
+
+def test_record_run_survives_counting_failures(tmp_path, monkeypatch):
+    project = tmp_path / "trial" / "project"
+    project.mkdir(parents=True)
+    trial = harness.Trial(tmp_path / "trial", project, tmp_path / "home", tmp_path / "bin", None, tmp_path / "proxy",
+                          {}, [], base_commit="abc", condition="both")
+    monkeypatch.setattr(harness, "prepare_experiment_trial", lambda *a, **kw: trial)
+    monkeypatch.setattr(harness, "run_agent", lambda *a, **kw: harness.AgentRun(False, None))
+    monkeypatch.setattr(harness, "run_checker", lambda *a, **kw: harness.TrialResult("t", "trial"))
+    def boom(*a, **kw):
+        raise RuntimeError("bad transcript")
+    monkeypatch.setattr(harness, "count_tool_use", boom)
+    monkeypatch.setattr(harness, "trial_denials", boom)
+    tr = harness.run_experiment_trial(LINKS, "both", trial.dir, proxy=tmp_path, catalog=tmp_path, cli=tmp_path,
+                                      arc=tmp_path)
+    data = json.loads((trial.dir / "checker.json").read_text())
+    assert data["tool_use"] == {"error": "RuntimeError: bad transcript"} and data["arc_denials"] is None
+    assert tr.reason is None
+
+
+def test_blind_export_cli_refuses_existing_out(tmp_path, capsys):
+    from artifactory.cli import main
+    res = tmp_path / "results" / "t"
+    (res / "round-1-arc" / "trial-1" / "project").mkdir(parents=True)
+    (tmp_path / "o").mkdir()
+    assert main(["blind-export", str(res), "--round", "1", "--out", str(tmp_path / "o")]) == 2
+    assert "already exists" in capsys.readouterr().err

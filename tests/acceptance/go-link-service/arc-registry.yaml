@@ -1,0 +1,69 @@
+# arc registry the harness installs in the arc and both conditions of the link-service experiment.
+# Each declared package starts as a one-line doc.go (the fixtures/go-links-arc overlay).
+version: 1
+
+system:
+  name: links
+  summary: |
+    A small HTTP link service: short codes redirect to URLs, with expiry, click counts and admin delete.
+
+non_goals: []
+
+ignore:
+  - "**/*_test.go"
+  - "go.mod"
+  - "go.sum"
+  - "*.json"
+  - "*.md"
+  - "artifactory.yaml"
+
+concepts:
+  - id: wiring
+    name: Wiring
+    summary: Reads configuration, builds the parts and starts the server.
+    paths: ["cmd/links/**"]
+    reason: One place that connects the packages; no rules live here.
+  - id: httpapi
+    name: HTTP API
+    summary: Request handlers and routing; translates HTTP to calls on the link rules.
+    paths: ["internal/httpapi/**"]
+    reason: Keeps HTTP details out of the rules and the storage.
+    rules:
+      - Handlers call internal/links; they never touch the store or any file.
+  - id: links
+    name: Link rules
+    summary: Codes, expiry and click counting.
+    paths: ["internal/links/**"]
+    reason: The rules of a link live in one place.
+  - id: store
+    name: Store
+    summary: The only package that persists links to the data file.
+    paths: ["internal/store/**"]
+    reason: One owner of the data file.
+    rules:
+      - Only this package reads or writes the data file.
+
+boundaries:
+  - id: http-not-store
+    from: ["internal/httpapi/**"]
+    deny: ["internal/store/**"]
+    reason: Handlers reach storage only through the link rules.
+  - id: store-not-http
+    from: ["internal/store/**"]
+    deny: ["internal/httpapi/**"]
+    reason: Storage knows nothing about HTTP.
+  - id: links-not-http
+    from: ["internal/links/**"]
+    deny: ["internal/httpapi/**"]
+    reason: The rules know nothing about HTTP.
+
+flags: []
+removals: []
+
+limits:
+  file_lines: 1000
+  function_lines: 150
+
+checks: []
+
+beads: true

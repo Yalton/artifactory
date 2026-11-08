@@ -124,7 +124,7 @@ func TestRunCatalogNoProvider(t *testing.T) {
 func TestRunShowSample(t *testing.T) {
 	var so, se bytes.Buffer
 	code := run([]string{"show", "kvstore", "--provider", "dir:../../samples/go"}, &so, &se)
-	if code != 0 || !strings.Contains(so.String(), "kvstore") || !strings.Contains(so.String(), "v0.1.0") {
+	if code != 0 || !strings.Contains(so.String(), "kvstore") || !strings.Contains(so.String(), "v0.2.0") {
 		t.Errorf("code=%d out=%q err=%q", code, so.String(), se.String())
 	}
 }

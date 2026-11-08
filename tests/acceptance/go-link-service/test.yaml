@@ -1,0 +1,15 @@
+name: go-link-service
+ecosystem: go
+fixture: ../../../fixtures/go-links-blank
+arc_overlay: ../../../fixtures/go-links-arc
+prompt: prompt.md
+time_limit_s: 7200
+main_pkg: ./cmd/links
+kit_checks: report
+service: links
+conditions: [control, artifactory, arc, both]
+modules:
+  - config
+  - httpserver
+  - shortid
+  - kvstore
