@@ -20,20 +20,20 @@ def test_proxy_serves_modules(tmp_path):
     app = tmp_path / "app"
     app.mkdir()
     (app / "go.mod").write_text("module app\n\ngo 1.24\n")
-    r = subprocess.run(["go", "get", "repo.billbert.co/artifactory/kvstore@v0.1.0"], cwd=app,
+    r = subprocess.run(["go", "get", "repo.billbert.co/artifactory/kvstore@v0.2.0"], cwd=app,
                        env=go_env(proxy, tmp_path), capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
-    assert "repo.billbert.co/artifactory/kvstore v0.1.0" in (app / "go.mod").read_text()
+    assert "repo.billbert.co/artifactory/kvstore v0.2.0" in (app / "go.mod").read_text()
 
 
 def test_proxy_layout_and_zip_contents(tmp_path):
     build_goproxy(MODS, tmp_path)
     base = tmp_path / "repo.billbert.co" / "artifactory" / "kvstore" / "@v"
-    assert (base / "list").read_text().split() == ["v0.1.0"]
-    assert '"Version":"v0.1.0"' in (base / "v0.1.0.info").read_text().replace(" ", "")
-    assert (base / "v0.1.0.mod").read_text().startswith("module repo.billbert.co/artifactory/kvstore")
-    names = zipfile.ZipFile(base / "v0.1.0.zip").namelist()
-    prefix = "repo.billbert.co/artifactory/kvstore@v0.1.0/"
+    assert (base / "list").read_text().split() == ["v0.2.0"]
+    assert '"Version":"v0.2.0"' in (base / "v0.2.0.info").read_text().replace(" ", "")
+    assert (base / "v0.2.0.mod").read_text().startswith("module repo.billbert.co/artifactory/kvstore")
+    names = zipfile.ZipFile(base / "v0.2.0.zip").namelist()
+    prefix = "repo.billbert.co/artifactory/kvstore@v0.2.0/"
     for f in ("go.mod", "README.md", "module.yaml", "kvstore.go", "example/main.go"):
         assert prefix + f in names
     assert all(n.startswith(prefix) for n in names)
