@@ -23,7 +23,9 @@ def _calls(transcript: Path):
             ev = json.loads(line)
         except ValueError:
             continue
-        part = ev.get("part") if isinstance(ev, dict) else None
+        if not isinstance(ev, dict):
+            continue
+        part = ev.get("part")
         if ev.get("type") != "tool_use" or not isinstance(part, dict):
             continue
         state = part.get("state")

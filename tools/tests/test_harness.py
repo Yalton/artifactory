@@ -1586,3 +1586,31 @@ def test_blind_export_cli(tmp_path, capsys):
     (res / "round-1-arc" / "trial-1" / "project").mkdir(parents=True)
     assert main(["blind-export", str(res), "--round", "1", "--out", str(tmp_path / "o")]) == 0
     assert (tmp_path / "o" / "P01").is_dir() and (tmp_path / "key.json").exists()
+
+
+def test_record_run_survives_counting_failures(tmp_path, monkeypatch):
+    project = tmp_path / "trial" / "project"
+    project.mkdir(parents=True)
+    trial = harness.Trial(tmp_path / "trial", project, tmp_path / "home", tmp_path / "bin", None, tmp_path / "proxy",
+                          {}, [], base_commit="abc", condition="both")
+    monkeypatch.setattr(harness, "prepare_experiment_trial", lambda *a, **kw: trial)
+    monkeypatch.setattr(harness, "run_agent", lambda *a, **kw: harness.AgentRun(False, None))
+    monkeypatch.setattr(harness, "run_checker", lambda *a, **kw: harness.TrialResult("t", "trial"))
+    def boom(*a, **kw):
+        raise RuntimeError("bad transcript")
+    monkeypatch.setattr(harness, "count_tool_use", boom)
+    monkeypatch.setattr(harness, "trial_denials", boom)
+    tr = harness.run_experiment_trial(LINKS, "both", trial.dir, proxy=tmp_path, catalog=tmp_path, cli=tmp_path,
+                                      arc=tmp_path)
+    data = json.loads((trial.dir / "checker.json").read_text())
+    assert data["tool_use"] == {"error": "RuntimeError: bad transcript"} and data["arc_denials"] is None
+    assert tr.reason is None
+
+
+def test_blind_export_cli_refuses_existing_out(tmp_path, capsys):
+    from artifactory.cli import main
+    res = tmp_path / "results" / "t"
+    (res / "round-1-arc" / "trial-1" / "project").mkdir(parents=True)
+    (tmp_path / "o").mkdir()
+    assert main(["blind-export", str(res), "--round", "1", "--out", str(tmp_path / "o")]) == 2
+    assert "already exists" in capsys.readouterr().err

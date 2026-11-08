@@ -72,3 +72,9 @@ def test_multiple_transcripts_and_bad_lines(tmp_path):
     b = _tr(tmp_path, [sh("artifactory search b")], "transcript-2.jsonl")
     b.write_text(b.read_text() + "not json\n")
     assert count_tool_use([a, b], None)["artifactory"] == {"search": 2}
+
+
+def test_non_dict_json_lines_skipped(tmp_path):
+    t = tmp_path / "transcript.jsonl"
+    t.write_text('0\nnull\n"x"\n[1]\n' + json.dumps(sh("artifactory search a")) + "\n")
+    assert count_tool_use([t], None)["artifactory"] == {"search": 1}

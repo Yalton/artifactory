@@ -91,7 +91,11 @@ def cmd_blind_export(args) -> int:
     conditions = [c.strip() for c in args.conditions.split(",") if c.strip()] if args.conditions else None
     if conditions is None:
         conditions = sorted({p.name.split("-", 2)[2] for p in test_dir.glob(f"round-{args.round}-*")})
-    key = blind_export(test_dir, args.round, conditions, Path(args.out), args.seed)
+    try:
+        key = blind_export(test_dir, args.round, conditions, Path(args.out), args.seed)
+    except FileExistsError as e:
+        print(f"artifactory blind-export: {e}", file=sys.stderr)
+        return 2
     print(f"blind export: {args.out} (key: {key})")
     return 0
 

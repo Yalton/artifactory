@@ -876,10 +876,16 @@ def _record_run(trial: Trial, result: TrialResult, run: AgentRun, arc: bool, *,
     if run.outcome is not None:
         result.roadmap = asdict(run.outcome)
     if arc:
-        result.arc_denials = trial_denials(trial.dir)
+        try:
+            result.arc_denials = trial_denials(trial.dir)
+        except Exception:  # noqa: BLE001 - a bad transcript must not lose the checker result
+            result.arc_denials = None
         result.arc_hook_live = arc_hook_live(trial.project)
     if count_tools:
-        result.tool_use = count_tool_use(sorted(trial.dir.glob("transcript*.jsonl")), tool_use_proxy)
+        try:
+            result.tool_use = count_tool_use(sorted(trial.dir.glob("transcript*.jsonl")), tool_use_proxy)
+        except Exception as e:  # noqa: BLE001
+            result.tool_use = {"error": f"{type(e).__name__}: {e}"}
     (trial.dir / "checker.json").write_text(result.to_json())
     return result
 
