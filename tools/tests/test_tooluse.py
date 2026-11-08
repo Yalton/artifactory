@@ -93,3 +93,14 @@ def test_code_mode_mcp_calls(tmp_path):
         ev('return await tools.opencode.fetch("GET", "repo.billbert.co/artifactory/httpserver")'),
     ]) + "\n")
     assert count_tool_use([t], None)["mcp"] == {"search": 1, "show": 1, "install": 1}
+
+
+def test_go_env_snoop_only_when_it_prints_goproxy(tmp_path):
+    import json
+    from artifactory.tooluse import count_tool_use
+    t = tmp_path / "transcript-1.jsonl"
+    ev = lambda cmd: json.dumps({"type": "tool_use", "part": {"type": "tool", "tool": "shell",
+                                 "state": {"input": {"command": cmd}}}})
+    t.write_text("\n".join([ev("GOROOT=$(go env GOROOT); ls $GOROOT"), ev("go env | grep PROXY"),
+                            ev("go env -json"), ev("go env GOPROXY")]) + "\n")
+    assert count_tool_use([t], None)["proxy_snoop"] == 3
