@@ -23,8 +23,8 @@ FILE_CALLS = re.compile(r"\bos\.(Open|OpenFile|ReadFile|WriteFile|Create)\(")
 # Handler definitions only (an anonymous handler, or any func with the handler signature), not
 # route registration: wiring next to the routes is normal in every condition.
 HANDLER_DEFS = re.compile(r"\bfunc\s*\(\s*\w+\s+http\.ResponseWriter"
-                          r"|\(\s*\w+\s+http\.ResponseWriter\s*,\s*\w+\s+\*http\.Request\s*\)")
-GENERATED = re.compile(r"^// Code generated .* DO NOT EDIT\.$", re.M)
+                          r"|\(\s*\w+\s+http\.ResponseWriter\s*,\s*\w+\s+\*http\.Request\b")
+GENERATED = re.compile(r"^// Code generated .* DO NOT EDIT\.\r?$", re.M)
 IMPORT_BLOCK = re.compile(r"\bimport\s*\(([^)]*)\)", re.S)
 IMPORT_ONE = re.compile(r"\bimport\s+([\w.]+\s+)?(\"[^\"]*\"|`[^`]*`)")
 IMPORT_SPEC = re.compile(r"(?:^|;)\s*([\w.]+\s+)?(\"[^\"]*\"|`[^`]*`)", re.M)
@@ -77,7 +77,7 @@ def _kit_call(src: str, kit: str, func: str) -> bool:
     name = import_names(src).get(f"{KIT_PREFIX}/{kit}")
     if name is None or name == "_":
         return False
-    rx = rf"(?<![\w.]){re.escape(func)}\(" if name == "." else rf"\b{re.escape(name)}\.{re.escape(func)}\("
+    rx = rf"(?<![\w.]){re.escape(func)}\(" if name == "." else rf"(?<![\w.]){re.escape(name)}\.{re.escape(func)}\("
     return re.search(rx, src) is not None
 
 
