@@ -30,6 +30,8 @@ class TrialResult:
     arc_hook_live: bool | None = None
     # Roadmap trials only (frontier, ornith): bead counts and build-loop flags. Omitted from JSON otherwise.
     roadmap: dict | None = None
+    # Experiment trials only: tool-use counts from the transcripts. Omitted from JSON otherwise.
+    tool_use: dict | None = None
 
     @property
     def passed(self) -> bool:
@@ -47,5 +49,7 @@ class TrialResult:
         }
         if self.roadmap is not None:
             data["roadmap"] = self.roadmap
+        if self.tool_use is not None:
+            data["tool_use"] = self.tool_use
         data["checks"] = [{k: v for k, v in asdict(c).items() if k != "gating" or not v} for c in self.checks]
         return json.dumps(data, indent=2)

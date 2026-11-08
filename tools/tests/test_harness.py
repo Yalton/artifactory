@@ -1561,3 +1561,28 @@ def test_experiment_checker_failure_keeps_the_agent_outcome(tmp_path, monkeypatc
     assert tr.reason == "infrastructure: checker: sandbox exploded" and not tr.passed
     assert tr.resumes == 2 and tr.roadmap["closed"] == 3 and tr.arc_denials == 0
     assert json.loads((trial.dir / "checker.json").read_text())["roadmap"]["beads"] == 4
+
+
+def test_experiment_trial_records_tool_use(tmp_path, monkeypatch):
+    project = tmp_path / "trial" / "project"
+    project.mkdir(parents=True)
+    ev = {"type": "tool_use", "part": {"tool": "shell", "state": {"input": {"command": "artifactory search x"}}}}
+    (tmp_path / "trial" / "transcript.jsonl").write_text(json.dumps(ev) + "\n")
+    trial = harness.Trial(tmp_path / "trial", project, tmp_path / "home", tmp_path / "bin", None, tmp_path / "proxy",
+                          {}, [], base_commit="abc", condition="artifactory")
+    monkeypatch.setattr(harness, "prepare_experiment_trial", lambda *a, **kw: trial)
+    monkeypatch.setattr(harness, "run_agent", lambda *a, **kw: harness.AgentRun(True, None))
+    monkeypatch.setattr(harness, "run_checker", lambda *a, **kw: harness.TrialResult("t", "trial"))
+    harness.run_experiment_trial(LINKS, "artifactory", trial.dir, proxy=tmp_path, catalog=tmp_path, cli=tmp_path,
+                                 arc=tmp_path)
+    data = json.loads((trial.dir / "checker.json").read_text())
+    assert data["tool_use"]["artifactory"] == {"search": 1}
+
+
+def test_blind_export_cli(tmp_path, capsys):
+    from artifactory.cli import main
+
+    res = tmp_path / "results" / "t"
+    (res / "round-1-arc" / "trial-1" / "project").mkdir(parents=True)
+    assert main(["blind-export", str(res), "--round", "1", "--out", str(tmp_path / "o")]) == 0
+    assert (tmp_path / "o" / "P01").is_dir() and (tmp_path / "key.json").exists()

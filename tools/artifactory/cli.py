@@ -84,6 +84,18 @@ def cmd_experiment(args) -> int:
     return 0
 
 
+def cmd_blind_export(args) -> int:
+    from .blind import blind_export
+
+    test_dir = Path(args.results_dir)
+    conditions = [c.strip() for c in args.conditions.split(",") if c.strip()] if args.conditions else None
+    if conditions is None:
+        conditions = sorted({p.name.split("-", 2)[2] for p in test_dir.glob(f"round-{args.round}-*")})
+    key = blind_export(test_dir, args.round, conditions, Path(args.out), args.seed)
+    print(f"blind export: {args.out} (key: {key})")
+    return 0
+
+
 def cmd_mirror(args) -> int:
     from .harness import refresh_mirrors
 
@@ -181,6 +193,13 @@ def main(argv: list[str] | None = None) -> int:
                                         "(default: all, as test.yaml lists them)")
     x.add_argument("--arc-src", type=Path, help="arc source tree to build (default $ARC_SRC)")
     x.set_defaults(func=cmd_experiment)
+    b = sub.add_parser("blind-export", help="copy an experiment round's projects under shuffled labels, tool traces removed")
+    b.add_argument("results_dir", help="results/<test>")
+    b.add_argument("--round", type=int, required=True)
+    b.add_argument("--out", required=True, help="directory for the labelled projects (key.json goes beside it)")
+    b.add_argument("--seed", type=int, default=0)
+    b.add_argument("--conditions", help="comma-separated (default: every condition found for the round)")
+    b.set_defaults(func=cmd_blind_export)
     m = sub.add_parser("mirror", help="refresh bare mirrors of the tests' kits (default: the Godot kits) into results/mirrors/")
     m.add_argument("test_dirs", nargs="*", help="acceptance test dirs whose modules to mirror")
     m.set_defaults(func=cmd_mirror)

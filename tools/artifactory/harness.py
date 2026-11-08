@@ -42,6 +42,7 @@ import yaml
 from .acceptance import AcceptanceTest, load_acceptance
 from .checks.go import go_env
 from .goproxy import build_goproxy
+from .tooluse import count_tool_use
 from .pyindex import build_pyindex, download_wheels, index_env, standard_wheels, uv_binary
 from .result import CheckResult, TrialResult
 from .sandbox import allowlist, sandbox_command
@@ -861,7 +862,8 @@ def run_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors: Pat
     return _record_run(trial, result, run, arc is not None)
 
 
-def _record_run(trial: Trial, result: TrialResult, run: AgentRun, arc: bool) -> TrialResult:
+def _record_run(trial: Trial, result: TrialResult, run: AgentRun, arc: bool, *,
+                tool_use_proxy: Path | None = None, count_tools: bool = False) -> TrialResult:
     """Put the agent run's outcome on the checker's result and write <trial>/checker.json."""
     result.resumes = run.resumes
     if result.reason is not None:
@@ -876,6 +878,8 @@ def _record_run(trial: Trial, result: TrialResult, run: AgentRun, arc: bool) -> 
     if arc:
         result.arc_denials = trial_denials(trial.dir)
         result.arc_hook_live = arc_hook_live(trial.project)
+    if count_tools:
+        result.tool_use = count_tool_use(sorted(trial.dir.glob("transcript*.jsonl")), tool_use_proxy)
     (trial.dir / "checker.json").write_text(result.to_json())
     return result
 
@@ -890,7 +894,7 @@ def run_experiment_trial(test: AcceptanceTest, condition: str, trial_dir: Path, 
         result = run_checker(trial, test, test.dir, STITCH_BRANCH, False)
     except Exception as e:  # noqa: BLE001 - keep the (long) agent run's outcome on the result
         result = TrialResult(test.name, trial.dir.name, reason=f"{INFRA_PREFIX}checker: {str(e) or type(e).__name__}")
-    return _record_run(trial, result, run, condition in ("arc", "both"))
+    return _record_run(trial, result, run, condition in ("arc", "both"), tool_use_proxy=proxy, count_tools=True)
 
 
 def resume_command(argv: list[str], session: str | None) -> list[str]:
