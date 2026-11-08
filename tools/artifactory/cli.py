@@ -17,8 +17,16 @@ def cmd_check(args) -> int:
         if not args.proxy:
             print("check: --proxy is required for a Go test", file=sys.stderr)
             return 2
-        from .checks.go import check_go
-        result = check_go(Path(args.project_dir), test, Path(args.proxy))
+        if bool(args.arc_registry) != bool(args.arc_base):
+            print("check: --arc-registry and --arc-base go together for a Go test", file=sys.stderr)
+            return 2
+        if args.main_pkg:
+            import dataclasses
+            test = dataclasses.replace(test, main_pkg=args.main_pkg)
+        from .checks import go as go_check
+        result = go_check.check_go(Path(args.project_dir), test, Path(args.proxy),
+                                   arc_registry=Path(args.arc_registry) if args.arc_registry else None,
+                                   arc_base=args.arc_base)
     elif test.ecosystem == "python":
         if not args.pyindex:
             print("check: --pyindex is required for a Python test", file=sys.stderr)
@@ -143,8 +151,10 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--branch", default="main", help="branch kits must be published on (Godot)")
     c.add_argument("--baseline", action="store_true", help="baseline grading (Godot)")
     c.add_argument("--arc", action="store_true", help="also report arc gate, informationally (Godot)")
-    c.add_argument("--arc-base", help="fixture commit arc gate compares against (with --arc)")
+    c.add_argument("--arc-base", help="fixture commit arc gate compares against (with --arc; Go: with --arc-registry)")
     c.add_argument("--proxy", help="file GOPROXY directory (Go)")
+    c.add_argument("--main-pkg", help="package to build and run, overriding test.yaml's main_pkg (Go)")
+    c.add_argument("--arc-registry", help="arc registry the checker installs to report arc_gate boundary findings (Go)")
     c.add_argument("--pyindex", help="wheel directory the clean environment installs from (Python)")
     c.add_argument("-o", "--output", required=True)
     c.set_defaults(func=cmd_check)

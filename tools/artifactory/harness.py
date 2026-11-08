@@ -864,7 +864,9 @@ def run_trial(test: AcceptanceTest, index_md: str, trial_dir: Path, mirrors: Pat
 def _record_run(trial: Trial, result: TrialResult, run: AgentRun, arc: bool) -> TrialResult:
     """Put the agent run's outcome on the checker's result and write <trial>/checker.json."""
     result.resumes = run.resumes
-    if run.dropped:
+    if result.reason is not None:
+        pass  # the checker failed (infrastructure); that reason stands
+    elif run.dropped:
         result.reason = (f"{INFRA_PREFIX}model connection dropped after {run.dropped.resumes} resumes: "
                          f"{run.dropped.drop[1]}")
     elif run.timed_out:
@@ -884,7 +886,10 @@ def run_experiment_trial(test: AcceptanceTest, condition: str, trial_dir: Path, 
     test.time_limit_s, then check it sandboxed, the same way in every condition."""
     trial = prepare_experiment_trial(test, condition, trial_dir, proxy, catalog, cli, arc)
     run = run_agent(trial, test, opencode_argv, "frontier")
-    result = run_checker(trial, test, test.dir, STITCH_BRANCH, False)
+    try:
+        result = run_checker(trial, test, test.dir, STITCH_BRANCH, False)
+    except Exception as e:  # noqa: BLE001 - keep the (long) agent run's outcome on the result
+        result = TrialResult(test.name, trial.dir.name, reason=f"{INFRA_PREFIX}checker: {str(e) or type(e).__name__}")
     return _record_run(trial, result, run, condition in ("arc", "both"))
 
 

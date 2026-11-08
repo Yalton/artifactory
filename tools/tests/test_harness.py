@@ -1542,3 +1542,22 @@ def test_cli_experiment_passes_its_arguments(monkeypatch, capsys):
     monkeypatch.setattr(harness, "run_experiment", bad)
     assert main(["experiment", str(LINKS_DIR), "--round", "1"]) == 1
     assert "artifactory experiment: nope" in capsys.readouterr().err
+
+
+def test_experiment_checker_failure_keeps_the_agent_outcome(tmp_path, monkeypatch):
+    project = tmp_path / "trial" / "project"
+    project.mkdir(parents=True)
+    trial = harness.Trial(tmp_path / "trial", project, tmp_path / "home", tmp_path / "bin", None, tmp_path / "proxy",
+                          {}, [], base_commit="abc", condition="both")
+    monkeypatch.setattr(harness, "prepare_experiment_trial", lambda *a, **kw: trial)
+    outcome = harness.RoadmapOutcome(beads=4, closed=3, sessions=5)
+    monkeypatch.setattr(harness, "run_agent", lambda *a, **kw: harness.AgentRun(True, outcome, resumes=2))
+
+    def broken(*a, **kw):
+        raise RuntimeError("sandbox exploded")
+    monkeypatch.setattr(harness, "run_checker", broken)
+    tr = harness.run_experiment_trial(LINKS, "both", trial.dir, proxy=tmp_path, catalog=tmp_path, cli=tmp_path,
+                                      arc=tmp_path)
+    assert tr.reason == "infrastructure: checker: sandbox exploded" and not tr.passed
+    assert tr.resumes == 2 and tr.roadmap["closed"] == 3 and tr.arc_denials == 0
+    assert json.loads((trial.dir / "checker.json").read_text())["roadmap"]["beads"] == 4
