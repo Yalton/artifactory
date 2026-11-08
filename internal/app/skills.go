@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 
@@ -23,7 +24,8 @@ func WriteSkills(dir string, missingOnly bool) ([]string, error) {
 		target := filepath.Join(dir, h, "skills", "artifactory")
 		p := filepath.Join(target, "SKILL.md")
 		if missingOnly {
-			if _, err := os.Stat(p); err == nil {
+			// Copy only when certainly absent, never over an unreadable copy.
+			if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
 				continue
 			}
 		}

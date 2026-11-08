@@ -111,7 +111,7 @@ func TestIndexCopiesSkillIntoHarnessDirMadeAfterInit(t *testing.T) {
 	if got, err := os.ReadFile(want); err != nil || string(got) != skill.Text() {
 		t.Fatalf("skill copy missing or differs: %v", err)
 	}
-	if !strings.Contains(so, want) {
+	if !strings.Contains(so, filepath.Join(".opencode", "skills", "artifactory", "SKILL.md")) {
 		t.Errorf("stdout does not name the skill copy: %q", so)
 	}
 	// A second index leaves an edited copy alone.

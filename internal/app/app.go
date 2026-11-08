@@ -111,12 +111,18 @@ func (a App) Search(ctx context.Context, spec, projectDir string, words []string
 	switch eco {
 	case "":
 		// Inside a project, search its own ecosystem unless told otherwise.
+		// An explicit --provider names another library: search all of it.
+		if spec != "" {
+			break
+		}
 		if projectDir == "" {
 			projectDir = "."
 		}
-		if f, err := project.Load(projectDir); err == nil {
-			eco = f.Ecosystem
+		f, err := project.Load(projectDir)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return SearchResult{}, usageErr(err)
 		}
+		eco = f.Ecosystem
 	case EcosystemAll:
 		eco = ""
 	}
@@ -284,12 +290,18 @@ func (a App) Index(ctx context.Context, dir string, modulesOnly bool, arcMode st
 			return IndexResult{}, usageErr(err)
 		}
 		written = append(written, "AGENTS.md")
-		// An agent folder made after init (by arc init, say) gets the skill too.
+		// An agent folder made after init (by arc init, say) gets the skill
+		// too. A failed copy only warns: the index itself is written.
 		skills, err := WriteSkills(dir, true)
 		if err != nil {
-			return IndexResult{}, usageErr(err)
+			warnings = append(warnings, "agent skill not copied: "+err.Error())
 		}
-		written = append(written, skills...)
+		for _, p := range skills {
+			if rel, err := filepath.Rel(dir, p); err == nil {
+				p = rel
+			}
+			written = append(written, p)
+		}
 	}
 	return IndexResult{Written: written, Modules: len(ds), Arc: opt.Arc, Warning: warn, Warnings: warnings}, nil
 }

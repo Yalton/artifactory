@@ -48,3 +48,24 @@ func TestSearchDefaultsToProjectEcosystem(t *testing.T) {
 		}
 	}
 }
+
+func TestSearchProviderFlagSearchesAllEcosystems(t *testing.T) {
+	cat := t.TempDir()
+	writeKit(t, filepath.Join(cat, "SettingsKit"), "SettingsKit", "Load config settings from a file.")
+	proj := t.TempDir()
+	project.Save(proj, project.File{Ecosystem: "go", Provider: "dir:/nowhere"})
+	res, err := App{}.Search(context.Background(), "dir:"+cat, proj, []string{"config", "settings"}, "")
+	if err != nil || len(res.Hits) != 1 {
+		t.Fatalf("hits %v, err %v; want SettingsKit", res.Hits, err)
+	}
+}
+
+func TestSearchMalformedProjectFails(t *testing.T) {
+	cat := t.TempDir()
+	writeKit(t, filepath.Join(cat, "SettingsKit"), "SettingsKit", "Load config settings from a file.")
+	proj := t.TempDir()
+	os.WriteFile(filepath.Join(proj, project.FileName), []byte("ecosystem: [\n"), 0o644)
+	if _, err := (App{}).Search(context.Background(), "", proj, []string{"config"}, ""); err == nil {
+		t.Fatal("search succeeded with a malformed artifactory.yaml")
+	}
+}
