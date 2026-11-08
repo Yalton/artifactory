@@ -133,16 +133,16 @@ func goEnv(t *testing.T, srcs ...string) string {
 	return proj
 }
 
-// installGo installs the module in src with `go get path@v0.1.0`.
+// installGo installs the module in src with `go get path@v0.2.0`.
 func installGo(t *testing.T, proj, src, path string) catalog.Module {
 	t.Helper()
 	d, err := descriptor.Load(src)
 	if err != nil {
 		t.Fatal(err)
 	}
-	d.Install = "go get " + path + "@v0.1.0"
-	m := catalog.Module{Descriptor: d, Tag: "v0.1.0"}
-	if v, err := Run(context.Background(), proj, m); err != nil || v != "0.1.0" {
+	d.Install = "go get " + path + "@v0.2.0"
+	m := catalog.Module{Descriptor: d, Tag: "v0.2.0"}
+	if v, err := Run(context.Background(), proj, m); err != nil || v != "0.2.0" {
 		t.Fatalf("Run = %q, %v", v, err)
 	}
 	return m
@@ -174,7 +174,7 @@ func TestInstallGoModule(t *testing.T) {
 	proj := goEnv(t, src)
 	m := installGo(t, proj, src, kvPath)
 	dir, err := Locate(proj, m)
-	if err != nil || !strings.Contains(dir, "kvstore@v0.1.0") {
+	if err != nil || !strings.Contains(dir, "kvstore@v0.2.0") {
 		t.Errorf("Locate = %q, %v", dir, err)
 	}
 
@@ -184,7 +184,7 @@ func TestInstallGoModule(t *testing.T) {
 	t.Setenv("GOFLAGS", "-mod=vendor")
 	got, err := Installed(context.Background(), proj, "go", []string{"kvstore", "absent"})
 	if err != nil || len(got.Found) != 1 || got.Found["kvstore"].Path != kvPath ||
-		got.Found["kvstore"].Descriptor.Version != "0.1.0" || len(got.Problems)+len(got.Ambiguous) != 0 {
+		got.Found["kvstore"].Descriptor.Version != "0.2.0" || len(got.Problems)+len(got.Ambiguous) != 0 {
 		t.Errorf("Installed = %+v, %v", got, err)
 	}
 }
