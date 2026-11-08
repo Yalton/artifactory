@@ -45,3 +45,7 @@ Then check the log. The marker count must be 1 for each installed module, and th
 grep -cxF '[<name>] live' /tmp/app.log
 ! grep -q Traceback /tmp/app.log
 ```
+
+When these checks pass, you are done: stop. Do not run them again or keep polishing.
+
+In tests that call a running server, `http.client.HTTPConnection` is not a context manager. Do not use it in a `with` block; call `conn.close()` in a `finally`. Give every connection a `timeout=` so a stuck server fails the test instead of hanging it.

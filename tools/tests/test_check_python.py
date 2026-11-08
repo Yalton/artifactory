@@ -352,6 +352,23 @@ def test_marker_text_in_project_code_fails_live(tmp_path, index):
     assert "app/banner.py contains the marker text" in checks(result)["modules_live"].detail
 
 
+def test_marker_text_in_comments_and_docstrings_passes_live(tmp_path, index):
+    # Prose that names the marker cannot print it, so only code is searched.
+    project = make_project(tmp_path)
+    (project / "app" / "notes.py").write_text('"""Importing stub_kit\nprints [stub-kit] live."""\n'
+                                             "X = 1  # prints [stub-kit] live once\n")
+    result = check_python(project, stub_test(), index)
+    assert failing(result) == set(), result.to_json()
+
+
+def test_marker_text_in_a_docstring_read_through_doc_fails_live(tmp_path, index):
+    project = make_project(tmp_path)
+    (project / "app" / "banner.py").write_text('"""[stub-kit] live"""\nBANNER = __doc__\n')
+    result = check_python(project, stub_test(), index)
+    assert failing(result) == {"modules_live"}, result.to_json()
+    assert "app/banner.py contains the marker text" in checks(result)["modules_live"].detail
+
+
 def test_uv_lock_project_installs_and_passes(tmp_path, index):
     """A `uv init` style project (pyproject.toml + uv.lock, no requirements.txt) is pinned and installed."""
     project = make_project(tmp_path)

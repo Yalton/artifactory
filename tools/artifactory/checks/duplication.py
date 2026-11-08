@@ -29,8 +29,7 @@ def check_duplication(project: Path, files: Iterable[Path], duplication: dict[st
             hits.append(f"{rel} unreadable ({type(e).__name__})")
             continue
         if file.suffix == ".py":
-            # Split as the tokenizer does (on \n only), so its rows line up with ours.
-            lines = _blank_python_prose(text, [ln.rstrip("\r\n") for ln in io.StringIO(text).readlines()])
+            lines = python_code_lines(text)
         else:
             lines = text.splitlines()
         for lineno, line in enumerate(lines, 1):
@@ -42,6 +41,11 @@ def check_duplication(project: Path, files: Iterable[Path], duplication: dict[st
         more = f" (+{len(hits) - MAX_LISTED} more)" if len(hits) > MAX_LISTED else ""
         return CheckResult("no_duplication", False, "; ".join(hits[:MAX_LISTED]) + more)
     return CheckResult("no_duplication", True, "no duplication patterns in project code")
+
+
+def python_code_lines(text: str) -> list[str]:
+    """`text`'s lines with comments and docstrings blanked, split as the tokenizer splits them (on \\n only)."""
+    return _blank_python_prose(text, [ln.rstrip("\r\n") for ln in io.StringIO(text).readlines()])
 
 
 # f-strings tokenize as FSTRING_START/MIDDLE/END on Python 3.12+; one with a {field} also has
