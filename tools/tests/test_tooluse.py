@@ -61,7 +61,7 @@ def test_mcp_and_bash_tool(tmp_path):
 
 def test_proxy_snoop(tmp_path):
     proxy = tmp_path / "goproxy" / "t"
-    t = _tr(tmp_path, [sh(f"ls {proxy}"), sh("echo $GOPROXY"), sh("go env GOPATH"), sh("go build ./..."),
+    t = _tr(tmp_path, [sh(f"ls {proxy}"), sh("echo $GOPROXY"), sh("go env GOPATH"), sh("go env"), sh("go build ./..."),
                        _call("read", path=str(proxy))])
     assert count_tool_use([t], proxy)["proxy_snoop"] == 3
     assert count_tool_use([t], None)["proxy_snoop"] == 2
