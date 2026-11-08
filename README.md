@@ -35,7 +35,7 @@ cd my-project && git init && go mod init example.com/my-project
 mkdir .opencode                                  # the agent folder, so init copies the skill
 arc init                                         # optional, before artifactory init
 artifactory init --ecosystem go
-artifactory search --ecosystem go http server
+artifactory search http server
 artifactory install httpserver
 ```
 
@@ -46,12 +46,12 @@ Then tell the agent to read `MODULES.md` and use every module listed there.
 | Command | Does |
 |---|---|
 | `artifactory catalog [--ecosystem E]` | List every kit in the library. |
-| `artifactory search WORDS... [--ecosystem E]` | Rank kits against a need. |
+| `artifactory search WORDS... [--ecosystem E\|all]` | Rank kits against a need; inside a project, only the project's ecosystem by default. |
 | `artifactory show NAME` | Print a kit's descriptor and README. |
 | `artifactory init --ecosystem E` | Set up a project: `artifactory.yaml`, `MODULES.md`, the `AGENTS.md` block, the agent skill. |
 | `artifactory install NAME...` | Run each kit's install line, pin its version and re-index. |
 | `artifactory add NAME...` | Put a kit in scope without installing it. |
-| `artifactory index` | Regenerate `MODULES.md` and the `AGENTS.md` block, and sync arc. |
+| `artifactory index` | Regenerate `MODULES.md` and the `AGENTS.md` block, copy the skill into new agent folders, and sync arc. |
 | `artifactory validate DIR` | Check a kit against the standard. |
 | `artifactory publish [DIR]` | Validate, test, push and tag a kit. |
 | `artifactory mcp` | Serve `search`, `show`, `install` and `index` as MCP tools over stdio. |

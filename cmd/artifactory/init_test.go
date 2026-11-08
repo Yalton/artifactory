@@ -95,3 +95,31 @@ func TestInitJSONListsSkillPaths(t *testing.T) {
 		t.Errorf("written is empty")
 	}
 }
+
+func TestIndexCopiesSkillIntoHarnessDirMadeAfterInit(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module x\n"), 0o644)
+	if code, _, se := runCmd("init", "--project", dir, "--provider", "dir:"+kitsDir(t)); code != 0 {
+		t.Fatalf("init: %d %s", code, se)
+	}
+	os.Mkdir(filepath.Join(dir, ".opencode"), 0o755)
+	code, so, se := runCmd("index", "--project", dir)
+	if code != 0 {
+		t.Fatalf("index: %d %s", code, se)
+	}
+	want := filepath.Join(dir, ".opencode", "skills", "artifactory", "SKILL.md")
+	if got, err := os.ReadFile(want); err != nil || string(got) != skill.Text() {
+		t.Fatalf("skill copy missing or differs: %v", err)
+	}
+	if !strings.Contains(so, filepath.Join(".opencode", "skills", "artifactory", "SKILL.md")) {
+		t.Errorf("stdout does not name the skill copy: %q", so)
+	}
+	// A second index leaves an edited copy alone.
+	os.WriteFile(want, []byte("edited"), 0o644)
+	if code, _, se := runCmd("index", "--project", dir); code != 0 {
+		t.Fatalf("re-index: %d %s", code, se)
+	}
+	if got, _ := os.ReadFile(want); string(got) != "edited" {
+		t.Errorf("re-index overwrote the skill copy")
+	}
+}

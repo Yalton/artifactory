@@ -8,14 +8,14 @@ import (
 	"repo.billbert.co/artifactory/artifactory/internal/app"
 )
 
-const searchUsage = "usage: artifactory search WORDS... [--ecosystem E] [--provider SPEC]"
+const searchUsage = "usage: artifactory search WORDS... [--ecosystem E|all] [--provider SPEC]"
 
 // runSearch ranks catalog modules against the given words. No match is not an
 // error: it prints a gap notice and exits 0.
 func runSearch(out *output, args []string) int {
 	fs := newFlags("search")
 	spec := fs.String("provider", "", "provider spec, e.g. dir:/path")
-	eco := fs.String("ecosystem", "", "only this ecosystem")
+	eco := fs.String("ecosystem", "", "only this ecosystem (default: the project's, unless --provider is given; all for every ecosystem)")
 	proj := fs.String("project", "", "project directory holding artifactory.yaml")
 	// Words and flags may be mixed: parse, take one word, repeat.
 	var words []string

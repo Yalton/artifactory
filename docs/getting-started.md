@@ -52,7 +52,7 @@ For opencode, arc must be on the agent's `PATH`, or the plugin allows everything
 
 Do this before `artifactory init`: with arc present, each kit you install is registered with arc, which then blocks edits inside kit files.
 
-With or without arc, make sure the folder for your agent exists before `artifactory init`, for example `mkdir .opencode`. `init` only copies its agent skill into agent folders that already exist (`.opencode/`, `.claude/`, `.agents/`).
+With or without arc, make sure the folder for your agent exists, for example `mkdir .opencode`. `init` and `index` copy the agent skill only into agent folders that already exist (`.opencode/`, `.claude/`, `.agents/`); `index` adds it to a folder made later.
 
 ## 4. Set up Artifactory
 
@@ -73,10 +73,10 @@ Commit these files. Re-run `artifactory index` after editing `artifactory.yaml` 
 
 ## 5. Add kits
 
-Search by need, and pass the ecosystem: `search` covers the whole library, so a Go project otherwise also gets Python hits.
+Search by need. Inside a project, `search` covers only the project's ecosystem; pass `--ecosystem all` to search the whole library.
 
 ```
-artifactory search --ecosystem go http server graceful shutdown
+artifactory search http server graceful shutdown
 artifactory show httpserver
 artifactory install httpserver config
 ```
@@ -147,7 +147,7 @@ Publishing needs a token with write access to the org. Outside a project, `--pro
 |---|---|
 | `no provider: pass --provider or run artifactory init` | Run it inside a project with `artifactory.yaml`, or pass `--provider forgejo:repo.billbert.co/artifactory`. |
 | `could not read Username for 'https://repo.billbert.co'` on install | Set `GOPRIVATE` and the git `insteadOf` rule from step 1. |
-| No skill in `.opencode/skills` | The folder did not exist at `artifactory init`, and `init` refuses to run twice. Copy it by hand: `mkdir -p .opencode/skills/artifactory && cp /path/to/Artifactory/skill/SKILL.md .opencode/skills/artifactory/`. |
+| No skill in `.opencode/skills` | The folder did not exist at `artifactory init`. Run `artifactory index`: it copies the skill into agent folders that lack it. |
 | `arc pre-commit: 'arc' not found on PATH` | Put arc on `PATH`; the gate is skipped until then. |
 | `arc: module: unknown subcommand` or kits not registered with arc | arc is the v0.1.0 tag. Install `github.com/Yalton/arc/cmd/arc@main`. |
 | New kits do not show up | The catalog is cached for 10 minutes. Pass `--refresh`. |
