@@ -8,7 +8,7 @@ Artifactory is a catalog of stitchable modules. Reuse beats writing. The project
 ## Before writing code
 
 1. Read `MODULES.md` and the artifactory block in `AGENTS.md`.
-2. Run `artifactory search WORDS... [--ecosystem E]` for each need. Run `artifactory show NAME` on a hit to read its descriptor.
+2. Run `artifactory search WORDS...` for each need (it searches the project's ecosystem; `--ecosystem all` searches every one). Run `artifactory show NAME` on a hit to read its descriptor.
 3. A hit that covers the need is the answer: use it. Nothing is written in its place.
 4. Done when every need has a module or a recorded gap.
 

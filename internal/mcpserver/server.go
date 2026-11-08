@@ -20,7 +20,7 @@ import (
 // SearchInput is the argument object of the search tool.
 type SearchInput struct {
 	Query     string `json:"query" jsonschema:"words describing the capability you need"`
-	Ecosystem string `json:"ecosystem,omitempty" jsonschema:"only modules of this ecosystem"`
+	Ecosystem string `json:"ecosystem,omitempty" jsonschema:"only modules of this ecosystem (default: the project's; all for every ecosystem)"`
 }
 
 // ShowInput is the argument object of the show tool.

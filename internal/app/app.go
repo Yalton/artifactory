@@ -108,12 +108,27 @@ func (a App) Search(ctx context.Context, spec, projectDir string, words []string
 	if err != nil {
 		return SearchResult{}, usageErr(err)
 	}
+	switch eco {
+	case "":
+		// Inside a project, search its own ecosystem unless told otherwise.
+		if projectDir == "" {
+			projectDir = "."
+		}
+		if f, err := project.Load(projectDir); err == nil {
+			eco = f.Ecosystem
+		}
+	case EcosystemAll:
+		eco = ""
+	}
 	hits := search.Rank(mods, words, eco)
 	if hits == nil {
 		hits = []search.Hit{}
 	}
 	return SearchResult{Hits: hits}, nil
 }
+
+// EcosystemAll as Search's eco searches every ecosystem, even inside a project.
+const EcosystemAll = "all"
 
 // ShowResult is the --json shape of show.
 type ShowResult struct {
@@ -269,6 +284,12 @@ func (a App) Index(ctx context.Context, dir string, modulesOnly bool, arcMode st
 			return IndexResult{}, usageErr(err)
 		}
 		written = append(written, "AGENTS.md")
+		// An agent folder made after init (by arc init, say) gets the skill too.
+		skills, err := WriteSkills(dir, true)
+		if err != nil {
+			return IndexResult{}, usageErr(err)
+		}
+		written = append(written, skills...)
 	}
 	return IndexResult{Written: written, Modules: len(ds), Arc: opt.Arc, Warning: warn, Warnings: warnings}, nil
 }
