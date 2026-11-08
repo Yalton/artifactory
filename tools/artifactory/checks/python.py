@@ -32,7 +32,7 @@ import zipfile
 from pathlib import Path
 
 from artifactory.acceptance import AcceptanceTest
-from artifactory.checks.duplication import check_duplication
+from artifactory.checks.duplication import check_duplication, python_code_lines
 from artifactory.checks.process import run
 from artifactory.pyindex import SANDBOX_PYTHON, uv_binary
 from artifactory.result import CheckResult, TrialResult
@@ -390,7 +390,8 @@ def _check_app(python: Path, project: Path, test: AcceptanceTest, env: dict, log
 
 def _check_live(run_: AppRun, project: Path, venv: Path, modules: list[str]) -> CheckResult:
     """Each marker printed once as a whole line by the app, which imported the module itself, and no project
-    file (outside virtual environments) holds the marker text to print it on the module's behalf."""
+    file's code (outside virtual environments; comments and docstrings aside) holds the marker text to print
+    it on the module's behalf."""
     if run_.log is None:
         return CheckResult("modules_live", False, "not run: the app did not start")
     lines = [l.rstrip("\r") for l in run_.log.splitlines()]
@@ -398,7 +399,11 @@ def _check_live(run_: AppRun, project: Path, venv: Path, modules: list[str]) -> 
     sources = {}
     for f in _py_files(project, skip_tests=False):
         try:
-            sources[f.relative_to(project).as_posix()] = f.read_text(errors="replace")
+            text = f.read_text(errors="replace")
+            # Prose that names the marker cannot print it, so only code is searched, unless the code reads a
+            # docstring back through __doc__.
+            code = "\n".join(python_code_lines(text))
+            sources[f.relative_to(project).as_posix()] = text if "__doc__" in code else code
         except OSError:
             pass
     problems = []

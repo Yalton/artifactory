@@ -23,3 +23,5 @@ No trial wrote code a kit owns, and no trial logged a traceback. Round 2's two f
 ## Changes for round 4
 
 - The consumer notes show the full `[build-system]` block with both `requires` and `build-backend`, and say that without `build-backend` installers fall back to setuptools. The block was checked to install offline from the wheel directory.
+
+Round 4: `results/python-round-4/REPORT.md`.
