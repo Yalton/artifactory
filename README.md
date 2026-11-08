@@ -17,18 +17,22 @@ It was built and tested with a local model: Ornith 1.5 (35B) in opencode.
 | arc (optional) | [github.com/Yalton/arc](https://github.com/Yalton/arc) | An architecture registry with agent hooks. When present, Artifactory registers each installed kit with it; arc then blocks edits inside kit files and checks wiring at commit time. |
 | Test harness | `tools/`, `tests/acceptance/` | Runs sandboxed trials of the local model against acceptance tests and checks the result. Only needed to develop the standard. |
 
-Ecosystems: `go`, `python` and `godot-csharp`. The library holds 8 Godot kits (settings, saves, transitions, console, crash reports and so on), 4 Go kits and 3 Python kits. List them with `artifactory catalog`.
+Ecosystems: `go`, `python` and `godot-csharp`. The library holds 8 Godot kits (settings, saves, transitions, console, crash reports and so on), 4 Go kits and 3 Python kits. List them with `artifactory catalog --provider forgejo:repo.billbert.co/artifactory`, or plain `artifactory catalog` inside a project.
 
 ## Getting started
 
 See **[docs/getting-started.md](docs/getting-started.md)**: install the tools, set up a project, add kits, and point an agent at them.
 
-The short version, for a Go project:
+The short version, for a Go project. It needs a Forgejo token (`FORGEJO_TOKEN` or a `tea` login) and an SSH key for the org:
 
 ```
 go install ./cmd/artifactory                     # from this checkout
-go install github.com/Yalton/arc/cmd/arc@latest  # optional
+go install github.com/Yalton/arc/cmd/arc@main    # optional; v0.1.0 lacks 'arc module'
+go env -w GOPRIVATE=repo.billbert.co
+git config --global url."ssh://git@repo.billbert.co/".insteadOf "https://repo.billbert.co/"
+
 cd my-project && git init && go mod init example.com/my-project
+mkdir .opencode                                  # the agent folder, so init copies the skill
 arc init                                         # optional, before artifactory init
 artifactory init --ecosystem go
 artifactory search --ecosystem go http server
@@ -56,14 +60,14 @@ Every command takes `--json`. Exit 0 is ok, 1 means a check found problems, 2 is
 
 ## Results
 
-Each acceptance test runs 5 trials of the local model per round; the bar is 4 of 5.
+The first three tests run 5 trials of the local model per round, with a bar of 4 of 5. The roadmap experiment compared three ways of writing a 16-bead plan, with 3 trials per condition in round 10 and 1 in round 11.
 
 | Test | Result | Report |
 |---|---|---|
 | `go-url-shortener` | 5/5 from round 3 | `docs/specs/2026-11-01-stitchability-standard-results.md` |
 | `godot-capsule-room` | not met: 5/5 by the checker in rounds 4 and 6, but screenshots showed missing cameras or rooms; 2/5 in rounds 7–9 with stricter checks | same |
 | `python-url-shortener` | 5/5 in round 5 | `results/python-round-5/REPORT.md` |
-| `godot-lantern-keep` (16-bead roadmap) | 0/9 and 0/3; stopped | `results/roadmap/REPORT.md`, `results/roadmap/round-11/REPORT.md` |
+| `godot-lantern-keep` (16-bead roadmap) | 0/9 and 0/3; stopped by choice after round 11 | `results/roadmap/REPORT.md`, `results/roadmap/round-11/REPORT.md` |
 
 ## Developing
 

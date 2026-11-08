@@ -2,7 +2,7 @@
 
 This guide sets up a new project so a coding agent finds and uses Artifactory kits. It uses opencode with the local Ornith model, but the project files work the same for Claude Code and Codex.
 
-Every command here was run on a fresh Go project against the real kit library, and Ornith then built a working service from it in a few minutes using both installed kits. Steps that differ for Python and Godot are noted.
+Every command here was run on a fresh Go project against the real kit library on Nov 8. In that one run, Ornith built a working service that uses both installed kits. The Python and Godot steps were not run end to end from this guide; they follow the same code paths.
 
 ## 1. Install the tools (once per machine)
 
@@ -11,12 +11,12 @@ You need Go 1.26 or newer, git, and an SSH key that can read the `artifactory` o
 ```
 cd /path/to/Artifactory            # this repository
 go install ./cmd/artifactory
-go install github.com/Yalton/arc/cmd/arc@latest    # optional, see step 3
+go install github.com/Yalton/arc/cmd/arc@main      # optional, see step 3; the v0.1.0 tag lacks 'arc module'
 ```
 
 Both land in `$(go env GOPATH)/bin`; put that on your `PATH`.
 
-**Library access.** The CLI lists kits through the Forgejo API. It uses `FORGEJO_TOKEN` if set, otherwise the token of your default `tea` login (`~/.config/tea/config.yml`). Check it works:
+**Library access.** The org is private, so you need a token. The CLI lists kits through the Forgejo API and uses `FORGEJO_TOKEN` if set, otherwise the token of your default `tea` login (`~/.config/tea/config.yml`). Check it works:
 
 ```
 artifactory catalog --provider forgejo:repo.billbert.co/artifactory
@@ -43,16 +43,16 @@ go mod init example.com/my-service      # Python: uv init; Godot: create the God
 arc init
 ```
 
-This writes `.arch/registry.yaml`, `ARCHITECTURE.md`, an `AGENTS.md`, a git pre-commit hook, and hooks for each agent:
+This writes `.arch/registry.yaml`, `ARCHITECTURE.md`, an `AGENTS.md`, a git pre-commit hook and, if the repo has a git remote it recognises, a CI workflow. It also writes hooks for each agent it finds on the machine (its CLI on `PATH` or its folder in the repo):
 - `.opencode/plugins/arc.js`;
 - `.claude/settings.json`;
 - `.codex/hooks.json`.
 
-arc must be on the agent's `PATH`, or its hooks allow everything.
+For opencode, arc must be on the agent's `PATH`, or the plugin allows everything.
 
-Do this before `artifactory init` for two reasons. `artifactory init` only copies its agent skill into agent folders that already exist (`.opencode/`, `.claude/`, `.agents/`). And with arc present, each kit you install is registered with arc, which then blocks edits inside kit files.
+Do this before `artifactory init`: with arc present, each kit you install is registered with arc, which then blocks edits inside kit files.
 
-Without arc, create the folder for your agent first, for example `mkdir .opencode`, so the skill is copied.
+With or without arc, make sure the folder for your agent exists before `artifactory init`, for example `mkdir .opencode`. `init` only copies its agent skill into agent folders that already exist (`.opencode/`, `.claude/`, `.agents/`).
 
 ## 4. Set up Artifactory
 
@@ -87,7 +87,7 @@ You can also leave this to the agent (step 6): the skill and the MCP tools let i
 
 ## 6. Point the agent at it
 
-**opencode with Ornith.** Put this in `opencode.json` at the project root, or in `~/.config/opencode/opencode.json`:
+**opencode with Ornith.** Put this in `opencode.json` at the project root, or in `~/.config/opencode/opencode.json`. The `baseURL` and model id are the home llama.cpp server's; point them at your own OpenAI-compatible server if it differs:
 
 ```json
 {
@@ -128,7 +128,7 @@ What the trial rounds taught:
   - to stop once the checks pass.
 
   They are already in the `AGENTS.md` block. Keep that block current with `artifactory index`.
-- **Check the result.** Python and Godot kits print `[<name>] live` once when the program starts; a missing marker means the kit is installed but not used. A Go kit counts as used when the main package depends on it: `go list -deps ./cmd/... | grep repo.billbert.co/artifactory`.
+- **Check the result.** Python and Godot kits print `[<name>] live` once when the program starts; a missing marker means the kit is installed but not used. A Go kit counts as used when the main package depends on it: `go list -deps ./... | grep repo.billbert.co/artifactory`.
 
 ## Making a kit
 
@@ -136,10 +136,10 @@ A kit is a folder or repo that follows `standard/STANDARD.md` and its ecosystem'
 
 ```
 artifactory validate path/to/kit
-artifactory publish path/to/kit      # validates, runs its tests, pushes main and tags v<version>
+artifactory publish path/to/kit --provider forgejo:repo.billbert.co/artifactory   # validates, runs its tests, pushes main and tags v<version>
 ```
 
-Publishing needs write access to the org. A kit in a subfolder of a larger repo is published as its own repo. Bump `version` in `module.yaml` for each release.
+Publishing needs a token with write access to the org. Outside a project, `--provider` is required. A kit in a subfolder of a larger repo is published as its own repo. Bump `version` in `module.yaml` for each release.
 
 ## Troubleshooting
 
@@ -149,4 +149,5 @@ Publishing needs write access to the org. A kit in a subfolder of a larger repo 
 | `could not read Username for 'https://repo.billbert.co'` on install | Set `GOPRIVATE` and the git `insteadOf` rule from step 1. |
 | No skill in `.opencode/skills` | The folder did not exist at `artifactory init`, and `init` refuses to run twice. Copy it by hand: `mkdir -p .opencode/skills/artifactory && cp /path/to/Artifactory/skill/SKILL.md .opencode/skills/artifactory/`. |
 | `arc pre-commit: 'arc' not found on PATH` | Put arc on `PATH`; the gate is skipped until then. |
+| `arc: module: unknown subcommand` or kits not registered with arc | arc is the v0.1.0 tag. Install `github.com/Yalton/arc/cmd/arc@main`. |
 | New kits do not show up | The catalog is cached for 10 minutes. Pass `--refresh`. |
