@@ -436,6 +436,7 @@ def _check_links(binary: Path, project: Path, tmp: Path, logs: Path) -> list[Che
     logs.mkdir(parents=True, exist_ok=True)
     log = logs / "service.log"
     fails: dict[str, str | None] = dict.fromkeys(LINKS_BEADS)
+    notes: dict[str, str] = {}
     proc = _start(binary, project, env, log)
     try:
         bad = _not_healthy(proc, base, log)
@@ -445,11 +446,17 @@ def _check_links(binary: Path, project: Path, tmp: Path, logs: Path) -> list[Che
         kept, fails["bead2_links"] = _step(_bead2, base)
         _, fails["bead3_expiry_stats"] = _step(_bead3, base)
         _, fails["bead4_delete"] = _step(_bead4, base)
-        stopped = _sigterm(proc)
-        if stopped and not fails["bead1_skeleton"]:
+        # A service that died before SIGTERM already failed the bead whose step lost the connection;
+        # bead1 is judged on the SIGTERM step only when the process was alive for it.
+        alive, stopped = _sigterm(proc)
+        if alive and stopped and not fails["bead1_skeleton"]:
             fails["bead1_skeleton"] = stopped
         _kill(proc)
-        if kept and not fails["bead2_links"]:
+        shutdown_failed = alive and stopped is not None and stopped.startswith("still running")
+        if kept and not fails["bead2_links"] and shutdown_failed:
+            # Killed after a hung shutdown: the restart step is not run, so bead2 is not failed twice.
+            notes["bead2_links"] = "; restart persistence not run: shutdown failed"
+        elif kept and not fails["bead2_links"]:
             proc = _start(binary, project, env, log)
             bad = _not_healthy(proc, base, log)
             if bad:
@@ -462,22 +469,22 @@ def _check_links(binary: Path, project: Path, tmp: Path, logs: Path) -> list[Che
     finally:
         _kill(proc)
     ok = {"bead1_skeleton": "healthz 200; SIGTERM exits 0",
-          "bead2_links": "create 201, redirect 302, unknown 404; link survives restart",
+          "bead2_links": "create 201, redirect 302, unknown 404" + notes.get("bead2_links", "; link survives restart"),
           "bead3_expiry_stats": "ttl_s expiry gives 410; stats count clicks",
           "bead4_delete": "delete needs the admin token (401 without, 401 wrong, 204 right), then 404"}
     return [CheckResult(n, fails[n] is None, fails[n] or ok[n]) for n in LINKS_BEADS]
 
 
-def _sigterm(proc: subprocess.Popen) -> str | None:
-    """SIGTERM the service; None if it exits 0 within SIGTERM_EXIT_S, else what went wrong."""
+def _sigterm(proc: subprocess.Popen) -> tuple[bool, str | None]:
+    """SIGTERM the service. (alive at SIGTERM, None if it exited 0 within SIGTERM_EXIT_S else what went wrong)."""
     if proc.poll() is not None:
-        return f"service exited ({proc.returncode}) before SIGTERM"
+        return False, f"service exited ({proc.returncode}) before SIGTERM"
     proc.send_signal(signal.SIGTERM)
     try:
         code = proc.wait(timeout=SIGTERM_EXIT_S)
     except subprocess.TimeoutExpired:
-        return f"still running {SIGTERM_EXIT_S}s after SIGTERM"
-    return None if code == 0 else f"exit status {code} after SIGTERM, want 0"
+        return True, f"still running {SIGTERM_EXIT_S}s after SIGTERM"
+    return True, None if code == 0 else f"exit status {code} after SIGTERM, want 0"
 
 
 # --- arc gate (informational) ----------------------------------------------------------------

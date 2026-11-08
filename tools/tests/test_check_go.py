@@ -316,13 +316,31 @@ func main() {
 '''
 
 
-def links_project(tmp_path, expiry=True) -> Path:
+def links_project(tmp_path, expiry=True, edit=lambda src: src) -> Path:
     project = tmp_path / "links-project"
     (project / "cmd" / "links").mkdir(parents=True)
     (project / "go.mod").write_text("module example.com/links\n\ngo 1.22\n")
-    (project / "cmd" / "links" / "main.go").write_text(
-        LINKS_SERVER.replace("EXPIRY", "true" if expiry else "false"))
+    src = edit(LINKS_SERVER.replace("EXPIRY", "true" if expiry else "false"))
+    (project / "cmd" / "links" / "main.go").write_text(src)
     return project
+
+
+def test_crash_during_bead3_is_bead3s_failure_not_the_skeletons(tmp_path, proxy):
+    stats = 'mux.HandleFunc("GET /links/{code}/stats", func(w http.ResponseWriter, r *http.Request) {\n'
+    project = links_project(tmp_path, edit=lambda src: src.replace(stats, stats + "\t\tos.Exit(3)\n"))
+    c = checks(check_go(project, LINKS_TEST, proxy))
+    assert c["bead1_skeleton"].passed, c["bead1_skeleton"]
+    assert c["bead2_links"].passed, c["bead2_links"]  # the data file was written before the crash
+    assert not c["bead3_expiry_stats"].passed and "malformed or failed response" in c["bead3_expiry_stats"].detail
+    assert not c["bead4_delete"].passed
+
+
+def test_hung_shutdown_fails_bead1_and_skips_bead2_persistence(tmp_path, proxy):
+    project = links_project(tmp_path, edit=lambda src: src.replace("\t<-ctx.Done()\n", "\t<-ctx.Done()\n\tselect {}\n"))
+    c = checks(check_go(project, LINKS_TEST, proxy))
+    assert not c["bead1_skeleton"].passed and "after SIGTERM" in c["bead1_skeleton"].detail
+    assert c["bead2_links"].passed and "persistence not run: shutdown failed" in c["bead2_links"].detail
+    assert c["bead3_expiry_stats"].passed and c["bead4_delete"].passed
 
 
 def test_link_service_passes_every_bead_and_reports_kits(tmp_path, proxy):
