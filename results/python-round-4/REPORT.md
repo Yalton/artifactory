@@ -25,3 +25,5 @@ Run: `artifactory round tests/acceptance/python-url-shortener --round 4 --trials
 
 - The consumer notes say to stop once the before-finishing checks pass, and that `HTTPConnection` is not a context manager: close it in a `finally`, with a `timeout=` on every connection.
 - The live check searches only code for marker text, blanking comments and docstrings as the duplication check does (`python_code_lines` in `tools/artifactory/checks/duplication.py`). A marker in a string assigned to a name is still caught, and so is a docstring in any file whose code reads `__doc__`.
+
+Round 5: `results/python-round-5/REPORT.md`.
