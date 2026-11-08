@@ -60,6 +60,22 @@ def cmd_round(args) -> int:
     return 0
 
 
+def cmd_experiment(args) -> int:
+    from . import harness
+
+    conditions = [c.strip() for c in args.conditions.split(",") if c.strip()] if args.conditions else None
+    try:
+        rounds = harness.run_experiment(Path(args.test_dir), args.round, trials=args.trials, conditions=conditions,
+                                        arc_src=args.arc_src)
+    except (ValueError, FileExistsError) as e:
+        print(f"artifactory experiment: {e}", file=sys.stderr)
+        return 1
+    for c, result in rounds.items():
+        print(f"{result.test} round {result.round} {c}: {result.passes}/{len(result.results)} passed"
+              + (f"; {result.infrastructure_failures} infrastructure failures" if result.infrastructure_failures else ""))
+    return 0
+
+
 def cmd_mirror(args) -> int:
     from .harness import refresh_mirrors
 
@@ -147,6 +163,14 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--arc-src", type=Path, help="arc source tree to build (default $ARC_SRC)")
     r.add_argument("--time-limit-s", type=int, help="wall-clock seconds per trial (default: test.yaml's time_limit_s)")
     r.set_defaults(func=cmd_round)
+    x = sub.add_parser("experiment", help="run a Go test's conditions, trials interleaved, on its frozen roadmap")
+    x.add_argument("test_dir")
+    x.add_argument("--round", type=int, required=True)
+    x.add_argument("--trials", type=int, default=3, help="trials per condition (default 3)")
+    x.add_argument("--conditions", help="comma-separated subset of the test's conditions, in run order "
+                                        "(default: all, as test.yaml lists them)")
+    x.add_argument("--arc-src", type=Path, help="arc source tree to build (default $ARC_SRC)")
+    x.set_defaults(func=cmd_experiment)
     m = sub.add_parser("mirror", help="refresh bare mirrors of the tests' kits (default: the Godot kits) into results/mirrors/")
     m.add_argument("test_dirs", nargs="*", help="acceptance test dirs whose modules to mirror")
     m.set_defaults(func=cmd_mirror)
