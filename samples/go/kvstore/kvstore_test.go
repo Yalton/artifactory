@@ -86,3 +86,54 @@ func TestNullFileIsEmptyStore(t *testing.T) {
 		t.Fatalf("got %q %v", v, ok)
 	}
 }
+
+func TestPutReplacesAndPersists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "d.json")
+	s, err := kvstore.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Put("a", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Put("a", "2"); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	s, err = kvstore.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if v, ok, _ := s.Get("a"); !ok || v != "2" {
+		t.Fatalf("reopen got %q %v", v, ok)
+	}
+}
+
+func TestDeleteRemovesAndPersists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "d.json")
+	s, err := kvstore.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Put("a", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if existed, err := s.Delete("a"); !existed || err != nil {
+		t.Fatalf("delete existing: %v %v", existed, err)
+	}
+	if existed, err := s.Delete("missing"); existed || err != nil {
+		t.Fatalf("delete missing: %v %v", existed, err)
+	}
+	s.Close()
+
+	s, err = kvstore.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, ok, _ := s.Get("a"); ok {
+		t.Fatal("key still present after reopen")
+	}
+}
