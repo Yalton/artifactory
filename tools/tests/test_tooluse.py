@@ -61,7 +61,7 @@ def test_mcp_and_bash_tool(tmp_path):
 
 def test_proxy_snoop(tmp_path):
     proxy = tmp_path / "goproxy" / "t"
-    t = _tr(tmp_path, [sh(f"ls {proxy}"), sh("echo $GOPROXY"), sh("go env GOPATH"), sh("go build ./..."),
+    t = _tr(tmp_path, [sh(f"ls {proxy}"), sh("echo $GOPROXY"), sh("go env GOPATH"), sh("go env"), sh("go build ./..."),
                        _call("read", path=str(proxy))])
     assert count_tool_use([t], proxy)["proxy_snoop"] == 3
     assert count_tool_use([t], None)["proxy_snoop"] == 2
@@ -78,3 +78,29 @@ def test_non_dict_json_lines_skipped(tmp_path):
     t = tmp_path / "transcript.jsonl"
     t.write_text('0\nnull\n"x"\n[1]\n' + json.dumps(sh("artifactory search a")) + "\n")
     assert count_tool_use([t], None)["artifactory"] == {"search": 1}
+
+
+def test_code_mode_mcp_calls(tmp_path):
+    # Shape from the Nov 8 smoke round: opencode runs MCP tools through its "execute" tool.
+    import json
+    from artifactory.tooluse import count_tool_use
+    t = tmp_path / "transcript-1.jsonl"
+    ev = lambda code: json.dumps({"type": "tool_use", "part": {"type": "tool", "tool": "execute",
+                                  "state": {"input": {"code": code}}}})
+    t.write_text("\n".join([
+        ev('return await tools.artifactory.search({ query: "http server" })'),
+        ev('const a = await tools.artifactory.show({ name: "httpserver" }); await tools.artifactory.install({names: ["x"]})'),
+        ev('return await tools.opencode.fetch("GET", "repo.billbert.co/artifactory/httpserver")'),
+    ]) + "\n")
+    assert count_tool_use([t], None)["mcp"] == {"search": 1, "show": 1, "install": 1}
+
+
+def test_go_env_snoop_only_when_it_prints_goproxy(tmp_path):
+    import json
+    from artifactory.tooluse import count_tool_use
+    t = tmp_path / "transcript-1.jsonl"
+    ev = lambda cmd: json.dumps({"type": "tool_use", "part": {"type": "tool", "tool": "shell",
+                                 "state": {"input": {"command": cmd}}}})
+    t.write_text("\n".join([ev("GOROOT=$(go env GOROOT); ls $GOROOT"), ev("go env | grep PROXY"),
+                            ev("go env -json"), ev("go env GOPROXY")]) + "\n")
+    assert count_tool_use([t], None)["proxy_snoop"] == 3
