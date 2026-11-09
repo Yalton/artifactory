@@ -5,6 +5,7 @@ Read this index before writing any code.
 - Before finishing, build and run the project and confirm each module's liveness marker appears and no errors are printed. The project notes below give the commands.
 - The Wiring section of the module's README shows where its calls go. Merge it into your existing class of the same name instead of adding a second one.
 - When the Before-finishing checks pass, stop. A module is in use once it is wired and its marker prints. Do not add features the task did not ask for (console commands, menus) just to exercise a module.
+- Modules marked (not installed) are in the library but not in this project yet. Before writing code for anything one covers, run `artifactory install NAME`, then follow the Wiring section of its README. For a need no module here covers, run `artifactory search WORDS` before writing it yourself.
 
 ## Project notes (go)
 

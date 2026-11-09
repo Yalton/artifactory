@@ -168,7 +168,7 @@ func TestInstallPartialFailureReindexes(t *testing.T) {
 		t.Errorf("stderr lacks installed list: %q", se)
 	}
 	md, _ := os.ReadFile(filepath.Join(proj, "MODULES.md"))
-	if !strings.Contains(string(md), "## AKit") || strings.Contains(string(md), "## BKit") {
+	if !strings.Contains(string(md), "## AKit") || strings.Contains(string(md), "## BKit\n") {
 		t.Errorf("MODULES.md:\n%s", md)
 	}
 	agents, _ := os.ReadFile(filepath.Join(proj, "AGENTS.md"))

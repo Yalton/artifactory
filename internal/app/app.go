@@ -226,7 +226,7 @@ func (a App) Index(ctx context.Context, dir string, modulesOnly bool, arcMode st
 	if err != nil {
 		return IndexResult{}, err
 	}
-	opt := index.Options{CLIInstall: !modulesOnly}
+	opt := index.Options{CLIInstall: !modulesOnly, NotInstalled: map[string]bool{}}
 	var ds []descriptor.Descriptor
 	var reg []arcreg.Entry
 	var skipped []string
@@ -238,6 +238,8 @@ func (a App) Index(ctx context.Context, dir string, modulesOnly bool, arcMode st
 	for _, e := range f.Modules {
 		if e.Version != "" {
 			installed = append(installed, e.Name)
+		} else {
+			opt.NotInstalled[e.Name] = true
 		}
 	}
 	local, err := install.Installed(ctx, dir, f.Ecosystem, installed)
@@ -391,6 +393,9 @@ func loadProjectMsg(err error) string {
 type Installed struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
+	// Wiring is the Wiring section of the module's README, so the agent
+	// writes calls that exist instead of guessing the API.
+	Wiring string `json:"wiring,omitempty"`
 }
 
 // InstallResult is the --json shape of install.
@@ -440,7 +445,7 @@ func (a App) Install(ctx context.Context, dir string, names []string, progress f
 	}
 	for _, m := range found {
 		if v := entryVersion(f.Modules, m.Name); v != "" {
-			res.Skipped = append(res.Skipped, Installed{m.Name, v})
+			res.Skipped = append(res.Skipped, Installed{Name: m.Name, Version: v})
 			say(fmt.Sprintf("%s already installed (v%s)", m.Name, strings.TrimPrefix(v, "v")))
 			continue
 		}
@@ -452,8 +457,17 @@ func (a App) Install(ctx context.Context, dir string, names []string, progress f
 		if err := project.Save(dir, f); err != nil {
 			return a.partial(ctx, dir, res, usageErr(err))
 		}
-		res.Installed = append(res.Installed, Installed{m.Name, v})
+		w := ""
+		if m.Docs != "" {
+			if b, err := p.ReadFile(ctx, m.Repo, m.Tag, m.Docs); err == nil {
+				w = wiringSection(string(b))
+			}
+		}
+		res.Installed = append(res.Installed, Installed{Name: m.Name, Version: v, Wiring: w})
 		say(fmt.Sprintf("installed %s (v%s)", m.Name, strings.TrimPrefix(v, "v")))
+		if w != "" {
+			say("Use it like this (from its README):\n\n" + w + "\n")
+		}
 	}
 	res.Index, err = a.Index(ctx, dir, false, ArcAuto)
 	return res, err

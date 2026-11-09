@@ -23,10 +23,21 @@ type Options struct {
 	// CLIInstall shows `artifactory install NAME` as each module's install
 	// command, with the raw line after it.
 	CLIInstall bool
+	// NotInstalled names modules in scope but not installed yet; with
+	// CLIInstall they are marked so the agent installs them before writing
+	// what they cover. The raw render (--modules-only) does not mark them.
+	NotInstalled map[string]bool
 }
+
+// notInstalledRule is added to the CLI preamble. Round 1 of the tool-value
+// experiment found agents searched the library, then wrote the code anyway.
+const notInstalledRule = "- Modules marked (not installed) are in the library but not in this project yet. Before writing code for anything one covers, run `artifactory install NAME`, then follow the Wiring section of its README. For a need no module here covers, run `artifactory search WORDS` before writing it yourself."
 
 func preamble(eco string, opt Options) string {
 	text := standard.Preamble(opt.Arc)
+	if opt.CLIInstall {
+		text = strings.TrimRight(text, "\n") + "\n" + notInstalledRule
+	}
 	if notes, ok := standard.Notes(eco); ok {
 		text += "\n\n## Project notes (" + eco + ")\n\n" + notes
 	}
@@ -39,7 +50,13 @@ func Render(eco string, mods []descriptor.Descriptor, opt Options) string {
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 	parts := []string{strings.TrimSpace(preamble(eco, opt)), ""}
 	for _, d := range sorted {
-		parts = append(parts, "## "+d.Name, "", d.Summary, "", "Use instead of writing:")
+		if opt.CLIInstall && opt.NotInstalled[d.Name] {
+			parts = append(parts, "## "+d.Name+" (not installed)", "", d.Summary, "",
+				"Not installed yet. If you need what it covers, run `artifactory install "+d.Name+"` first, then follow its README's Wiring section.", "",
+				"Use instead of writing:")
+		} else {
+			parts = append(parts, "## "+d.Name, "", d.Summary, "", "Use instead of writing:")
+		}
 		for _, r := range d.Replaces {
 			parts = append(parts, "- "+r)
 		}
