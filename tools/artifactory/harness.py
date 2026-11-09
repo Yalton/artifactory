@@ -110,6 +110,7 @@ class RoundResult:
     arc: bool = False
     roadmap: str = "none"
     time_limit_s: int | None = None
+    session_limit_s: int | None = None  # roadmap rounds only; omitted from JSON when unset
     standard_commit: str | None = None  # REPO HEAD, "-dirty" if the tree had changes; None if git failed
     kits: dict[str, str | None] = field(default_factory=dict)  # module -> mirror main SHA (empty for Go rounds)
     pyindex_wheels: list[str] = field(default_factory=list)  # wheel filenames of the built index (Python rounds only)
@@ -139,6 +140,7 @@ class RoundResult:
             "roadmap": self.roadmap,
             **({"condition": self.condition} if self.condition is not None else {}),
             "time_limit_s": self.time_limit_s,
+            **({"session_limit_s": self.session_limit_s} if self.session_limit_s is not None else {}),
             "standard_commit": self.standard_commit,
             "kits": self.kits,
             "pyindex_wheels": self.pyindex_wheels,
@@ -756,12 +758,14 @@ def _writing_phase(trial: Trial, test: AcceptanceTest, sessions: _Sessions) -> i
         return 0
 
 
-def bead_loop(trial: Trial, sessions: _Sessions, out: RoadmapOutcome) -> None:
+def bead_loop(trial: Trial, sessions: _Sessions, out: RoadmapOutcome, cap: float | None = None) -> None:
     """Work beads one fresh session at a time until all are closed, time is up, or sessions stall.
 
     Ready beads get a bead session, and a second if the first leaves them unclosed; then they are
     set blocked with a note. With nothing ready but beads unfinished, a stall session works them
-    regardless of dependencies, and the loop goes back to `bd ready`, so no time is left unused."""
+    regardless of dependencies, and the loop goes back to `bd ready`, so no time is left unused.
+    With `cap`, each session ends after that many seconds; a bead session ended by it counts as a
+    failure, so one stuck bead cannot use the whole time limit."""
     failures: dict[str, int] = {}
     retry = None
     quick = 0
@@ -782,7 +786,7 @@ def bead_loop(trial: Trial, sessions: _Sessions, out: RoadmapOutcome) -> None:
             return  # bd bookkeeping used the last of the time; no zero-length session
         out.sessions += 1
         out.stall_sessions += bead is None
-        took = sessions.run(prompt)
+        took = sessions.run(prompt, cap)
         after = _bead_states(trial)
         quick = quick + 1 if took < QUICK_SESSION_S and after == before else 0
         retry = None
@@ -828,7 +832,7 @@ def run_agent(trial: Trial, test: AcceptanceTest, opencode_argv: list[str] | Non
                 out.sessions += 1
                 sessions.run(test.prompt)
         else:
-            bead_loop(trial, sessions, out)
+            bead_loop(trial, sessions, out, test.session_limit_s)
     except (RuntimeError, ValueError, OSError) as e:
         out.bd_error = str(e)
     try:  # also after a bd_error: whatever beads are readable still count
@@ -1081,7 +1085,8 @@ def run_round(test_dir: Path, round_no: int, trials: int = 5, baseline: bool = F
     out = round_dir(root, test.name, round_no, baseline, roadmap)
     out.mkdir(parents=True, exist_ok=True)
     result = RoundResult(test.name, round_no, product=product, arc=arc, roadmap=roadmap,
-                         time_limit_s=test.time_limit_s, standard_commit=standard_commit(),
+                         time_limit_s=test.time_limit_s, session_limit_s=test.session_limit_s,
+                         standard_commit=standard_commit(),
                          kits=kit_commits(mirrors, test.modules) if mirrors is not None else {},
                          pyindex_wheels=sorted(w.name for w in pyindex.glob("*.whl")) if pyindex is not None else [])
     for k in range(1, trials + 1):
@@ -1147,7 +1152,8 @@ def run_experiment(test_dir: Path, round_no: int, trials: int = 3, conditions: l
     catalog = build_catalog(root / "go-catalog" / test.name)
     commit = standard_commit()
     rounds = {c: RoundResult(test.name, round_no, product=c in ("artifactory", "both"), arc=c in ("arc", "both"),
-                             roadmap="frontier", time_limit_s=test.time_limit_s, standard_commit=commit, condition=c)
+                             roadmap="frontier", time_limit_s=test.time_limit_s,
+                             session_limit_s=test.session_limit_s, standard_commit=commit, condition=c)
               for c in conditions}
     for out in outs.values():
         out.mkdir(parents=True, exist_ok=True)

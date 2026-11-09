@@ -16,6 +16,7 @@ class AcceptanceTest:
     modules: list[str]
     time_limit_s: int
     duplication: dict[str, list[str]]
+    session_limit_s: int | None = None  # roadmap rounds: each bead or stall session ends after this
     roadmap_prompt: str | None = None
     probe: str | None = None
     python_wheels: tuple[str, ...] = ()  # requirement specs put in the trial's wheel index (Python tests)
@@ -40,6 +41,7 @@ def load_acceptance(dir: Path) -> AcceptanceTest:
         prompt=(dir / cfg.get("prompt", "prompt.md")).read_text(),
         modules=list(cfg["modules"]),
         time_limit_s=int(cfg["time_limit_s"]),
+        session_limit_s=int(cfg["session_limit_s"]) if cfg.get("session_limit_s") else None,
         duplication={k: list(v) for k, v in dup.items()},
         roadmap_prompt=(dir / cfg["roadmap_prompt"]).read_text() if cfg.get("roadmap_prompt") else None,
         probe=cfg.get("probe"),
