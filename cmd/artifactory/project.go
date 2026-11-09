@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"repo.billbert.co/artifactory/artifactory/internal/app"
@@ -26,12 +27,13 @@ func splitArgs(args []string) (names, flags []string) {
 
 // runInit writes the skill copies and artifactory.yaml, then the index.
 func runInit(out *output, args []string) int {
-	const use = "usage: artifactory init [--ecosystem E] [--provider SPEC] [--project DIR]"
+	const use = "usage: artifactory init [--ecosystem E] [--provider SPEC] [--project DIR] [--scope all|none]"
 	fs := newFlags("init")
 	eco := fs.String("ecosystem", "", "ecosystem (default: detected)")
 	spec := fs.String("provider", defaultProvider, "provider spec")
 	dir := fs.String("project", ".", "project directory")
-	if err := fs.Parse(args); err != nil || fs.NArg() > 0 {
+	scope := fs.String("scope", "all", "all: list every library module of the ecosystem in MODULES.md, marked not installed; none: list none")
+	if err := fs.Parse(args); err != nil || fs.NArg() > 0 || (*scope != "all" && *scope != "none") {
 		return out.fail(exitUsage, use)
 	}
 	if _, err := os.Stat(filepath.Join(*dir, project.FileName)); err == nil {
@@ -53,8 +55,29 @@ func runInit(out *output, args []string) int {
 	if err != nil {
 		return out.fail(exitUsage, err.Error())
 	}
-	if err := project.Save(*dir, project.File{Ecosystem: *eco, Provider: *spec}); err != nil {
+	f := project.File{Ecosystem: *eco, Provider: *spec}
+	if err := project.Save(*dir, f); err != nil {
 		return out.fail(exitUsage, err.Error())
+	}
+	// --scope all puts every library module of the ecosystem in scope, not
+	// installed, so the agent sees what exists before it writes its own.
+	// A library that cannot be read leaves the scope empty, with a warning.
+	if *scope == "all" {
+		if p, err := resolveProvider("", *dir); err != nil {
+			fmt.Fprintln(out.stderr, "warning: library not listed in MODULES.md: "+err.Error())
+		} else if mods, _, err := catalog.Load(context.Background(), p); err != nil {
+			fmt.Fprintln(out.stderr, "warning: library not listed in MODULES.md: "+err.Error())
+		} else {
+			for _, m := range mods {
+				if m.Ecosystem == *eco {
+					f.Modules = append(f.Modules, project.Entry{Name: m.Name})
+				}
+			}
+			sort.Slice(f.Modules, func(i, j int) bool { return f.Modules[i].Name < f.Modules[j].Name })
+			if err := project.Save(*dir, f); err != nil {
+				return out.fail(exitUsage, err.Error())
+			}
+		}
 	}
 	if !out.json {
 		for _, p := range paths {

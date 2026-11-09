@@ -69,6 +69,8 @@ It writes:
 | `AGENTS.md` (a marked block) | the standard's rules and the ecosystem's build, run and check notes from `standard/consumer/` |
 | `.opencode/skills/artifactory/SKILL.md` and `.claude/skills/…` | when to search and how to install |
 
+`MODULES.md` starts by listing every kit in the library for your ecosystem, each marked "(not installed)", so the agent sees what exists before it writes its own. Pass `--scope none` to start with an empty list instead.
+
 Commit these files. Re-run `artifactory index` after editing `artifactory.yaml` by hand.
 
 ## 5. Add kits
@@ -81,7 +83,7 @@ artifactory show httpserver
 artifactory install httpserver config
 ```
 
-`install` runs the kit's install line, pins the version in `artifactory.yaml`, and rewrites `MODULES.md`, the `AGENTS.md` block and arc's registry (`arc module list` shows them).
+`install` runs the kit's install line, pins the version in `artifactory.yaml`, prints the Wiring section of the kit's README, and rewrites `MODULES.md`, the `AGENTS.md` block and arc's registry (`arc module list` shows them).
 
 You can also leave this to the agent (step 6): the skill and the MCP tools let it search and install itself.
 

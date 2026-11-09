@@ -160,3 +160,27 @@ func TestWriteAgentsIgnoresStrayEndBeforeBlock(t *testing.T) {
 		t.Errorf("block not replaced in place: %q", s)
 	}
 }
+
+// Round 1 of the tool-value experiment: agents searched the library and then
+// wrote the code anyway. Modules in scope but not installed are marked, and
+// the CLI preamble tells the agent to install before writing that code.
+func TestNotInstalledModulesAreMarked(t *testing.T) {
+	ds := loadAll(t, "../../samples/go")[:2]
+	got := Render("go", ds, Options{CLIInstall: true, NotInstalled: map[string]bool{ds[0].Name: true}})
+	if !strings.Contains(got, "## "+ds[0].Name+" (not installed)\n") {
+		t.Errorf("not-installed module not marked:\n%s", got)
+	}
+	if strings.Contains(got, "## "+ds[1].Name+" (not installed)") {
+		t.Errorf("installed module marked as not installed")
+	}
+	if !strings.Contains(got, "Not installed yet. If you need what it covers, run `artifactory install "+ds[0].Name+"` first") {
+		t.Errorf("no install-first line:\n%s", got)
+	}
+	if !strings.Contains(got, notInstalledRule) || !strings.Contains(AgentsBlock("go", Options{CLIInstall: true}), notInstalledRule) {
+		t.Errorf("CLI preamble lacks the install-first rule")
+	}
+	raw := Render("go", ds, Options{NotInstalled: map[string]bool{ds[0].Name: true}})
+	if strings.Contains(raw, notInstalledRule) || strings.Contains(raw, "(not installed)") {
+		t.Errorf("raw render has the CLI rule or marks")
+	}
+}

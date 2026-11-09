@@ -1432,7 +1432,10 @@ def test_experiment_conditions_setup(experiment_parts, condition):
     if tool:
         cfg = yaml.safe_load((proj / "artifactory.yaml").read_text())
         assert cfg["ecosystem"] == "go" and cfg["provider"] == f"dir:{p['catalog'].resolve()}"
-        assert not cfg.get("modules")
+        # init puts every Go kit of the catalog in scope, none installed (tool-value round 2)
+        assert {m["name"] for m in cfg["modules"]} == set(LINKS.modules)
+        assert not any(m.get("version") for m in cfg["modules"])
+        assert "(not installed)" in (proj / "MODULES.md").read_text()
         assert p["catalog"].resolve() in trial.ro_binds
         # the MCP entry's command resolves on the sandbox PATH
         assert (Path(trial.env["PATH"].split(":")[0]) / "artifactory").is_file()

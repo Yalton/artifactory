@@ -65,7 +65,7 @@ func TestRunInitRefusesExisting(t *testing.T) {
 func TestRunIndexScopesModules(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "project.godot"), nil, 0o644)
-	if code, _, se := runCmd("init", "--project", dir, "--provider", "dir:"+kitsDir(t)); code != 0 {
+	if code, _, se := runCmd("init", "--project", dir, "--provider", "dir:"+kitsDir(t), "--scope", "none"); code != 0 {
 		t.Fatalf("%d %s", code, se)
 	}
 	if code, _, se := runCmd("add", "CrashKit", "CursorKit", "--project", dir); code != 0 {
@@ -75,7 +75,7 @@ func TestRunIndexScopesModules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := strings.Count("\n"+string(md), "\n## CrashKit\n") + strings.Count(string(md), "\n## CursorKit\n"); n != 2 {
+	if n := strings.Count("\n"+string(md), "\n## CrashKit (not installed)\n") + strings.Count(string(md), "\n## CursorKit (not installed)\n"); n != 2 {
 		t.Errorf("want CrashKit and CursorKit headings, got %d", n)
 	}
 	if strings.Contains(string(md), "## DebugLogKit") {
@@ -232,5 +232,28 @@ func TestIndexArcOnWithoutArcExits2(t *testing.T) {
 	}
 	if code, _, _ := runCmd("index", "--project", dir, "--arc", "bogus"); code != 2 {
 		t.Errorf("bad mode exit %d, want 2", code)
+	}
+}
+
+// init lists every library module of the ecosystem, marked not installed,
+// so the agent sees what exists before writing its own (tool-value round 1).
+func TestInitScopesTheEcosystemsModules(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "project.godot"), nil, 0o644)
+	if code, _, se := runCmd("init", "--project", dir, "--provider", "dir:"+kitsDir(t)); code != 0 {
+		t.Fatalf("%d %s", code, se)
+	}
+	md, err := os.ReadFile(filepath.Join(dir, "MODULES.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"## CrashKit (not installed)", "## DebugLogKit (not installed)", "run `artifactory install CrashKit` first"} {
+		if !strings.Contains(string(md), want) {
+			t.Errorf("MODULES.md lacks %q", want)
+		}
+	}
+	y, _ := os.ReadFile(filepath.Join(dir, "artifactory.yaml"))
+	if strings.Contains(string(y), "version:") {
+		t.Errorf("init installed something:\n%s", y)
 	}
 }
