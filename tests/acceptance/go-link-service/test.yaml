@@ -3,7 +3,8 @@ ecosystem: go
 fixture: ../../../fixtures/go-links-blank
 arc_overlay: ../../../fixtures/go-links-arc
 prompt: prompt.md
-time_limit_s: 7200
+time_limit_s: 2700
+session_limit_s: 900  # a stuck bead session ends here; the bead gets one fresh retry, then is blocked
 main_pkg: ./cmd/links
 kit_checks: report
 service: links

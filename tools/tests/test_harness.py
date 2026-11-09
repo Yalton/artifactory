@@ -837,6 +837,20 @@ def test_bead_loop_never_exceeds_the_time_limit_and_reports_timeout(bead_trial):
     assert out.blocked == 0  # a bead killed at the deadline is not counted as a failure
 
 
+def test_session_limit_ends_a_stuck_bead_session_and_the_loop_moves_on(bead_trial, monkeypatch):
+    monkeypatch.setattr(harness, "QUICK_SESSION_S", 0)
+    t = bead_trial
+    a = new_bead(t, "stuck", priority=1)
+    b = new_bead(t, "easy", priority=2)
+    agent = bead_agent(on_bead=f'if [ "$id" = {a} ]; then sleep 600; else bd close $id >/dev/null; fi',
+                       on_stall=":")
+    test = dataclasses.replace(LANTERN, session_limit_s=3)
+    timed_out, out, elapsed = run(t, agent, 15, test=test)
+    assert order(t)[:3] == [a, a, b]  # killed at the cap, retried once, blocked, then the next bead
+    assert states(t) == {a: "blocked", b: "closed"}
+    assert out.closed == 1 and elapsed < 15 + 8
+
+
 def test_no_timeout_when_the_last_session_finished_in_time(bead_trial, monkeypatch):
     monkeypatch.setattr(harness, "QUICK_SESSION_S", 0)
     t = bead_trial

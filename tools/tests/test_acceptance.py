@@ -74,7 +74,7 @@ def test_load_link_service():
     t = load_acceptance(LINKS)
     assert t.ecosystem == "go" and t.modules == ["config", "httpserver", "shortid", "kvstore"]
     assert t.main_pkg == "./cmd/links" and t.kit_checks == "report" and t.service == "links"
-    assert t.time_limit_s == 7200 and t.conditions == ("control", "artifactory", "arc", "both")
+    assert t.time_limit_s == 2700 and t.session_limit_s == 900 and t.conditions == ("control", "artifactory", "arc", "both")
     assert t.fixture == (ROOT / "fixtures/go-links-blank").resolve()
     assert (t.fixture / "go.mod").read_text().startswith("module links")
     assert t.arc_overlay == (ROOT / "fixtures/go-links-arc").resolve() and t.arc_overlay.is_dir()
