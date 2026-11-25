@@ -1,0 +1,13 @@
+{
+  "types": [
+    "game-kit"
+  ],
+  "verify_command": "git status --short",
+  "git_authority": {
+    "commit": "agent",
+    "push_branch": "agent",
+    "push_main": "owner",
+    "merge": "pr",
+    "default_branch": "main"
+  }
+}
